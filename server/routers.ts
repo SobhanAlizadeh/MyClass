@@ -1,0 +1,58 @@
+import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { ONE_YEAR_MS } from "@shared/const";
+import { getEnv } from "./_core/env";
+import { sdk } from "./_core/sdk";
+import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { getDb, upsertUser, getDashboardData, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
+const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+export const appRouter = router({
+  auth: router({
+    me: publicProcedure.query(opts => opts.ctx.user),
+    login: publicProcedure
+      .input(z.object({ username: z.string().min(1, "نام کاربری لازم است"), password: z.string().min(1, "رمز عبور لازم است") }))
+      .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست؛ اتصال MySQL را بررسی کنید" });
+        const env = getEnv();
+        const ok = input.username.trim() === env.adminUsername && input.password === env.adminPassword;
+        if (!ok) throw new TRPCError({ code: "UNAUTHORIZED", message: "نام کاربری یا رمز عبور اشتباه است" });
+        const openId = `local_${env.adminUsername}`;
+        const displayName = "مدیر دفترکلاس";
+        await upsertUser({ openId, name: displayName, loginMethod: "password", role: "admin", lastSignedIn: new Date() });
+        const sessionToken = await sdk.createSessionToken(openId, { name: displayName, expiresInMs: ONE_YEAR_MS });
+        ctx.setSessionCookie(sessionToken);
+        // Also return the token so clients that cannot store cookies
+        // (cross-site iframes, Safari ITP) can use `Authorization: Bearer`.
+        return { success: true, token: sessionToken } as const;
+      }),
+    logout: publicProcedure.mutation(({ ctx }) => { ctx.clearSessionCookie(); return { success: true } as const; }),
+  }),
+  school: router({
+    dashboard: protectedProcedure.query(() => getDashboardData()),
+    addSchool: protectedProcedure.input(z.object({ name: z.string().min(1), address: z.string().optional() })).mutation(({ input }) => createSchool(input)),
+    updateSchool: protectedProcedure.input(z.object({ id: z.number(), name: z.string().min(1), address: z.string().optional() })).mutation(({ input }) => updateSchool(input)),
+    deleteSchool: protectedProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteSchool(input.id)),
+    addClass: protectedProcedure.input(z.object({ schoolId: z.number().nullable().optional(), name: z.string().min(1), grade: z.string().optional(), schoolYear: z.string().optional() })).mutation(({ input }) => createClass(input)),
+    addTeam: protectedProcedure.input(z.object({ classId: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(({ input }) => createTeam(input)),
+    addStudent: protectedProcedure.input(z.object({ classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(({ input }) => createStudent(input)),
+    attendance: protectedProcedure.input(z.object({ studentId: z.number(), date, status: z.enum(["present", "absent", "late", "excused"]), note: z.string().optional() })).mutation(({ input }) => saveAttendance(input)),
+    addSubject: protectedProcedure.input(z.object({ classId: z.number(), name: z.string().min(1) })).mutation(({ input }) => createSubject(input)),
+    updateSubject: protectedProcedure.input(z.object({ id: z.number(), classId: z.number(), name: z.string().min(1) })).mutation(({ input }) => updateSubject(input)),
+    deleteSubject: protectedProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteSubject(input.id)),
+    grade: protectedProcedure.input(z.object({ studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]).default("class"), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(({ input }) => saveGrade(input)),
+    updateGrade: protectedProcedure.input(z.object({ id: z.number(), studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(({ input }) => updateGrade(input)),
+    deleteGrade: protectedProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteGrade(input.id)),
+    activity: protectedProcedure.input(z.object({ studentId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(({ input }) => saveActivity(input)),
+    spendStudent: protectedProcedure.input(z.object({ studentId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(({ input }) => consumeStudentPoints(input)),
+    spendTeam: protectedProcedure.input(z.object({ teamId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(({ input }) => consumeTeamPoints(input)),
+    teamActivity: protectedProcedure.input(z.object({ teamId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(({ input }) => saveTeamActivity(input)),
+    updateClass: protectedProcedure.input(z.object({ id: z.number(), schoolId: z.number().nullable().optional(), name: z.string().min(1), grade: z.string().optional(), schoolYear: z.string().optional() })).mutation(({ input }) => updateClass(input)),
+    updateTeam: protectedProcedure.input(z.object({ id: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(({ input }) => updateTeam(input)),
+    updateStudent: protectedProcedure.input(z.object({ id: z.number(), classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(({ input }) => updateStudent(input)),
+    deleteClass: protectedProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteClass(input.id)),
+    deleteTeam: protectedProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteTeam(input.id)),
+    deleteStudent: protectedProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteStudent(input.id)),
+  }),
+});
+export type AppRouter = typeof appRouter;

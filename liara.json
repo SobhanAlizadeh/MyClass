@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.liara.ir/schema/deploy.json",
+  "app": "classroom-ledger",
+  "platform": "docker",
+  "port": 3000,
+  "region": "iran",
+  "note": "پس از اولین دیپلوی، متغیرهای محیطی را در پنل لیارا (تنظیمات > متغیرهای محیطی) وارد کنید"
+}

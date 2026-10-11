@@ -1,0 +1,4 @@
+DATABASE_URL=mysql://user:PASSWORD@gateway01.ANY-REGION.prod.aws.tidbcloud.com:4000/classroom_ledger?ssl=%7B%22minVersion%22%3A%22TLSv1.2%22%7D
+JWT_SECRET=yek-ramz-tool-va-random
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=ramz-khodet

@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1789664546866,
+      "tag": "0000_cuddly_the_watchers",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1789664632723,
+      "tag": "0001_absent_morbius",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1789666743143,
+      "tag": "0002_mushy_spitfire",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1789666888716,
+      "tag": "0003_grey_mattie_franklin",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1789678555290,
+      "tag": "0004_cuddly_mephisto",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1790081048619,
+      "tag": "0005_dear_clint_barton",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1790542623891,
+      "tag": "0006_furry_sunset_bain",
+      "breakpoints": true
+    }
+  ]
+}

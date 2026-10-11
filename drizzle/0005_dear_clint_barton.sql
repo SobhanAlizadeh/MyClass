@@ -1,0 +1,1 @@
+ALTER TABLE `grades` ADD `gradeType` enum('class','midterm','final') DEFAULT 'class' NOT NULL;
