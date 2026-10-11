@@ -30,6 +30,15 @@ const trpcClient = trpc.createClient({
   ],
 });
 
+// PWA: register the service worker in production builds only.
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // SW is an enhancement (offline shell + install); ignore failures.
+    });
+  });
+}
+
 createRoot(document.getElementById("root")!).render(
   <trpc.Provider client={trpcClient} queryClient={queryClient}>
     <QueryClientProvider client={queryClient}>
