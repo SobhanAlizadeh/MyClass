@@ -265,13 +265,69 @@ export async function resetLoginFailures(): Promise<void> {
 export const REFERRAL_POINTS = 3;
 export type ReferralCandidate = { id: number; firstName: string; lastName: string; className: string | null };
 export type ReferralCore = { id: number; studentId: number; studentName: string; className: string | null; code: string; inviteLink: string };
-export type ReferralStatRow = { id: number; studentId: number; studentName: string; className: string | null; code: string; inviteLink: string; createdAt: number; joinCount: number };
+export type ReferralStatRow = { id: number; studentId: number; studentName: string; className: string | null; code: string; inviteLink: string; createdAt: number; joinCount: number; leaveCount: number };
+
+// --- تنظیمات عمومی اپ (key/value در دیتابیس — قابل تغییر از پنل ادمین) -------
+let _settingsReady: Promise<unknown> | null = null;
+function ensureSettingsTable(conn: ReturnType<typeof connect>) {
+  if (!_settingsReady) _settingsReady = conn
+    .execute("CREATE TABLE IF NOT EXISTS app_settings (setting_key VARCHAR(64) PRIMARY KEY, setting_value TEXT NOT NULL, updated_at BIGINT NOT NULL DEFAULT 0)")
+    .catch(e => { _settingsReady = null; throw e; });
+  return _settingsReady;
+}
+async function getSetting(key: string): Promise<string | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureSettingsTable(conn);
+  const res: any = await conn.execute("SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1", [key]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  return row ? String(row.setting_value) : null;
+}
+async function setSetting(key: string, value: string): Promise<void> {
+  const conn = getRawConn();
+  if (!conn) throw new Error("Database unavailable");
+  await ensureSettingsTable(conn);
+  await conn.execute("INSERT INTO app_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = VALUES(updated_at)", [key, value, Date.now()]);
+}
+
+const REFERRAL_POINTS_KEY = "referral_points";
+const REFERRAL_LEAVE_PENALTY_KEY = "referral_leave_penalty";
+function clampReferralPoints(n: number): number { return Math.max(1, Math.min(1000, Math.trunc(n))); }
+export type ReferralSettings = { points: number; pointsIsDefault: boolean; leavePenalty: boolean };
+
+// امتیاز دعوت مؤثر: تنظیم ادمین ← سکرت env ← پیش‌فرض ۳
+export async function getReferralSettings(): Promise<ReferralSettings> {
+  const envPts = Number(process.env.TELEGRAM_REFERRAL_POINTS ?? REFERRAL_POINTS);
+  const fallback = Number.isFinite(envPts) && envPts > 0 ? clampReferralPoints(envPts) : REFERRAL_POINTS;
+  try {
+    const [rawPts, rawPen] = await Promise.all([getSetting(REFERRAL_POINTS_KEY), getSetting(REFERRAL_LEAVE_PENALTY_KEY)]);
+    const dbPts = rawPts != null ? Number(rawPts) : NaN;
+    const dbValid = Number.isFinite(dbPts) && dbPts > 0;
+    return {
+      points: dbValid ? clampReferralPoints(dbPts) : fallback,
+      pointsIsDefault: !dbValid,
+      leavePenalty: rawPen == null ? true : rawPen === "1",
+    };
+  } catch {
+    return { points: fallback, pointsIsDefault: true, leavePenalty: true };
+  }
+}
+export async function setReferralPoints(points: number): Promise<ReferralSettings> {
+  await setSetting(REFERRAL_POINTS_KEY, String(clampReferralPoints(points)));
+  return getReferralSettings();
+}
+export async function setReferralLeavePenalty(enabled: boolean): Promise<ReferralSettings> {
+  await setSetting(REFERRAL_LEAVE_PENALTY_KEY, enabled ? "1" : "0");
+  return getReferralSettings();
+}
 
 let _refTablesReady: Promise<unknown> | null = null;
 function ensureReferralTables(conn: ReturnType<typeof connect>) {
   if (!_refTablesReady) _refTablesReady = (async () => {
     await conn.execute("CREATE TABLE IF NOT EXISTS referrals (id BIGINT AUTO_INCREMENT PRIMARY KEY, student_id INT NOT NULL, code VARCHAR(16) NOT NULL UNIQUE, invite_link VARCHAR(255) NOT NULL DEFAULT '', telegram_user_id BIGINT NULL, telegram_chat_id BIGINT NULL, telegram_username VARCHAR(64) NULL, created_at BIGINT NOT NULL, INDEX idx_ref_student (student_id), INDEX idx_ref_tg (telegram_user_id))");
-    await conn.execute("CREATE TABLE IF NOT EXISTS referral_joins (id BIGINT AUTO_INCREMENT PRIMARY KEY, referral_id BIGINT NOT NULL, telegram_user_id BIGINT NOT NULL, telegram_name VARCHAR(128) NULL, joined_at BIGINT NOT NULL, UNIQUE KEY uq_ref_user (referral_id, telegram_user_id))");
+    await conn.execute("CREATE TABLE IF NOT EXISTS referral_joins (id BIGINT AUTO_INCREMENT PRIMARY KEY, referral_id BIGINT NOT NULL, telegram_user_id BIGINT NOT NULL, telegram_name VARCHAR(128) NULL, joined_at BIGINT NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'active', UNIQUE KEY uq_ref_user (referral_id, telegram_user_id))");
+    // مهاجرت تنبل: جدول‌های ساخته‌شده در نسخه‌های قبلی ستون status ندارند
+    await conn.execute("ALTER TABLE referral_joins ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'active'").catch(() => {});
   })().catch(e => { _refTablesReady = null; throw e; });
   return _refTablesReady;
 }
@@ -398,13 +454,39 @@ export async function countReferralJoins(referralId: number): Promise<number> {
   return Number((Array.isArray(res) ? res : res.rows)?.[0]?.n ?? 0);
 }
 
+// خروج عضو دعوت‌شده: آخرین عضویت «فعال» او را پیدا و وضعیتش را left می‌کند.
+// شرط status='active' در UPDATE تضمین می‌کند یک خروج، فقط یک‌بار منجر به کسر شود.
+export type ReferralLeaveInfo = { joinId: number; referralId: number; studentId: number; studentName: string; code: string; referrerChatId: number | null };
+export async function claimReferralLeave(tgUserId: number): Promise<ReferralLeaveInfo | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureReferralTables(conn);
+  const sel: any = await conn.execute(
+    "SELECT j.id AS join_id, j.referral_id, r.student_id, r.code, r.telegram_chat_id, s.firstName, s.lastName FROM referral_joins j JOIN referrals r ON r.id = j.referral_id JOIN students s ON s.id = r.student_id WHERE j.telegram_user_id = ? AND j.status = 'active' ORDER BY j.id DESC LIMIT 1",
+    [tgUserId]
+  );
+  const row: any = (Array.isArray(sel) ? sel : sel.rows)?.[0];
+  if (!row) return null;
+  const upd: any = await conn.execute("UPDATE referral_joins SET status = 'left' WHERE id = ? AND status = 'active'", [row.join_id]);
+  const affected = Array.isArray(upd) ? (upd as any)?.rowsAffected : upd?.rowsAffected;
+  if (typeof affected === "number" && affected === 0) return null; // همزمان قبلاً کسر شده
+  return {
+    joinId: Number(row.join_id),
+    referralId: Number(row.referral_id),
+    studentId: Number(row.student_id),
+    studentName: `${row.firstName} ${row.lastName}`,
+    code: String(row.code),
+    referrerChatId: row.telegram_chat_id != null ? Number(row.telegram_chat_id) : null,
+  };
+}
+
 export async function listReferrals(): Promise<ReferralStatRow[]> {
   const conn = getRawConn();
   if (!conn) return [];
   await ensureReferralTables(conn);
   const res: any = await conn.execute(
-    "SELECT r.id, r.student_id, r.code, r.invite_link, r.created_at, s.firstName, s.lastName, c.name AS class_name, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id) AS join_count FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId ORDER BY join_count DESC, r.id ASC"
+    "SELECT r.id, r.student_id, r.code, r.invite_link, r.created_at, s.firstName, s.lastName, c.name AS class_name, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id) AS join_count, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id AND j.status = 'left') AS leave_count FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId ORDER BY join_count DESC, r.id ASC"
   );
   const rows = (Array.isArray(res) ? res : res.rows) ?? [];
-  return rows.map((row: any) => ({ id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link ?? ""), createdAt: Number(row.created_at ?? 0), joinCount: Number(row.join_count ?? 0) }));
+  return rows.map((row: any) => ({ id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link ?? ""), createdAt: Number(row.created_at ?? 0), joinCount: Number(row.join_count ?? 0), leaveCount: Number(row.leave_count ?? 0) }));
 }

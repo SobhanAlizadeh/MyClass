@@ -30,6 +30,8 @@ import {
   getLatestReferralByTelegramUser,
   recordReferralJoin,
   countReferralJoins,
+  claimReferralLeave,
+  getReferralSettings,
   setReferralInviteLink,
   REFERRAL_POINTS,
   saveActivity,
@@ -40,7 +42,11 @@ const CHANNEL_FALLBACK = "@takrahtop";
 function botToken(): string { return process.env.TELEGRAM_BOT_TOKEN ?? ""; }
 function channelId(): string { return process.env.TELEGRAM_CHANNEL_ID?.trim() || CHANNEL_FALLBACK; }
 function webhookSecret(): string { return process.env.TELEGRAM_WEBHOOK_SECRET ?? ""; }
-function referralPoints(): number { const n = Number(process.env.TELEGRAM_REFERRAL_POINTS ?? REFERRAL_POINTS); return Number.isFinite(n) && n > 0 ? Math.trunc(n) : REFERRAL_POINTS; }
+// امتیاز مؤثر هر دعوت: تنظیم ادمین (DB) ← سکرت env ← پیش‌فرض ۳
+async function referralPoints(): Promise<number> {
+  try { return (await getReferralSettings()).points; }
+  catch { const n = Number(process.env.TELEGRAM_REFERRAL_POINTS ?? REFERRAL_POINTS); return Number.isFinite(n) && n > 0 ? Math.trunc(n) : REFERRAL_POINTS; }
+}
 
 // ---------- Telegram API ----------
 async function tg(method: string, body: unknown): Promise<any> {
@@ -104,7 +110,7 @@ async function sendReferralLink(chatId: number, studentId: number, tgUser: any):
       return;
     }
   }
-  const pts = referralPoints();
+  const pts = await referralPoints();
   await sendMessage(chatId, [
     `سلام ${ref.studentName} 👋`,
     "",
@@ -127,7 +133,7 @@ async function handleMessage(msg: any): Promise<void> {
   if (text.startsWith("/start") || text.startsWith("/link") || text.startsWith("/mylink")) {
     const existing = await getLatestReferralByTelegramUser(from.id);
     if (existing?.inviteLink) {
-      const pts = referralPoints();
+      const pts = await referralPoints();
       await sendMessage(chatId, [
         `${existing.studentName} عزیز 👋`,
         "",
@@ -185,47 +191,84 @@ async function handleCallbackQuery(cq: any): Promise<void> {
 }
 
 async function handleChatMemberUpdate(cu: any): Promise<void> {
+  const oldMember = cu?.old_chat_member;
   const newMember = cu?.new_chat_member;
-  const inviteLink = cu?.invite_link;
-  if (!newMember || newMember.status !== "member") return; // فقط عضویت (نه خروج/محرومیت)
-  if (newMember.user?.is_bot) return;
-  if (!inviteLink?.invite_link) return; // عضویت با لینک عمومی کانال — بدون امتیاز
+  const user = newMember?.user ?? oldMember?.user;
+  if (!user || user.is_bot) return;
+  const oldStatus = String(oldMember?.status ?? "");
+  const newStatus = String(newMember?.status ?? "");
 
-  const link: string = String(inviteLink.invite_link);
-  let ref = await getReferralByInviteLink(link);
-  if (!ref && typeof inviteLink.name === "string" && inviteLink.name.startsWith("ref-")) {
-    ref = await getReferralByCode(inviteLink.name.slice(4));
-  }
-  if (!ref) return;
+  // عضویت جدید در کانال → امتیاز به دعوت‌کننده
+  if (newStatus === "member") {
+    const inviteLink = cu?.invite_link;
+    if (!inviteLink?.invite_link) return; // عضویت با لینک عمومی کانال — بدون امتیاز
 
-  const tgUserId = Number(newMember.user?.id);
-  if (!Number.isFinite(tgUserId) || tgUserId <= 0) return;
-  const isNew = await recordReferralJoin(ref.id, tgUserId, displayName(newMember.user));
-  if (!isNew) return; // همان اکانت قبلاً امتیاز گرفته
+    const link: string = String(inviteLink.invite_link);
+    let ref = await getReferralByInviteLink(link);
+    if (!ref && typeof inviteLink.name === "string" && inviteLink.name.startsWith("ref-")) {
+      ref = await getReferralByCode(inviteLink.name.slice(4));
+    }
+    if (!ref) return;
 
-  const pts = referralPoints();
-  try {
-    await saveActivity({
-      studentId: ref.studentId,
-      date: todayISO(),
-      title: "دعوت دوست به کانال تلگرام",
-      description: `عضویت ${displayName(newMember.user)} از طریق لینک اختصاصی (${ref.code})`,
-      kind: "positive",
-      points: pts,
-    });
-  } catch (e) {
-    console.error("[telegram] failed to save referral activity:", e);
+    const tgUserId = Number(user.id);
+    if (!Number.isFinite(tgUserId) || tgUserId <= 0) return;
+    const isNew = await recordReferralJoin(ref.id, tgUserId, displayName(user));
+    if (!isNew) return; // همان اکانت قبلاً امتیاز گرفته
+
+    const pts = await referralPoints();
+    try {
+      await saveActivity({
+        studentId: ref.studentId,
+        date: todayISO(),
+        title: "دعوت دوست به کانال تلگرام",
+        description: `عضویت ${displayName(user)} از طریق لینک اختصاصی (${ref.code})`,
+        kind: "positive",
+        points: pts,
+      });
+    } catch (e) {
+      console.error("[telegram] failed to save referral activity:", e);
+      return;
+    }
+
+    // اطلاع به دعوت‌کننده (اگر خودش عضو نشده باشد)
+    if (cu?.from?.id && ref.inviteLink && Number(cu.from.id) !== tgUserId) {
+      const total = await countReferralJoins(ref.id);
+      await sendMessage(cu.from.id, [
+        "🎉 آفرین!",
+        `${displayName(user)} با لینک شما عضو کانال شد؛ ${pts} امتیاز گرفتنید.`,
+        `مجموع دعوت‌های موفق شما: ${total}`,
+      ].join("\n"));
+    }
     return;
   }
 
-  if (cu?.from?.id && ref.inviteLink) {
-    const total = await countReferralJoins(ref.id);
-    // اطلاع به دعوت‌کننده (اگر خودش عضو نشده باشد)
-    if (Number(cu.from.id) !== tgUserId) {
-      await sendMessage(cu.from.id, [
-        "🎉 آفرین!",
-        `${displayName(newMember.user)} با لینک شما عضو کانال شد؛ ${pts} امتیاز گرفتنید.`,
-        `مجموع دعوت‌های موفق شما: ${total}`,
+  // خروج یا محرومیت عضو از کانال → کسر امتیاز از دعوت‌کننده (فقط یک‌بار)
+  if ((newStatus === "left" || newStatus === "kicked") && (oldStatus === "member" || oldStatus === "administrator" || oldStatus === "restricted")) {
+    const settings = await getReferralSettings().catch(() => null);
+    if (!settings?.leavePenalty) return; // کسر امتیاز توسط ادمین خاموش شده
+
+    const info = await claimReferralLeave(Number(user.id));
+    if (!info) return; // عضو قبلاً کسر شده یا اصلاً با لینک دعوت نیامده بود
+
+    try {
+      await saveActivity({
+        studentId: info.studentId,
+        date: todayISO(),
+        title: "خروج عضو دعوت‌شده از کانال",
+        description: `${displayName(user)} که با لینک اختصاصی (${info.code}) عضو شده بود کانال را ترک کرد؛ ${settings.points} امتیاز کسر شد`,
+        kind: "negative",
+        points: -settings.points,
+      });
+    } catch (e) {
+      console.error("[telegram] failed to save leave penalty:", e);
+      return;
+    }
+
+    // اطلاع به دعوت‌کننده
+    if (info.referrerChatId) {
+      await sendMessage(info.referrerChatId, [
+        "⚠️ کسر امتیاز",
+        `${displayName(user)} که با لینک شما عضو کانال شده بود، کانال را ترک کرد؛ ${settings.points} امتیاز از شما کسر شد.`,
       ].join("\n"));
     }
   }

@@ -12,7 +12,8 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CalendarDays, Check, ClipboardList, Edit3, Lock, Medal, Moon, Plus, School, Share2, Sparkles, Sun, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
+import { CalendarDays, Check, ClipboardList, Edit3, Lock, Medal, Moon, Plus, School, Settings2, Share2, Sparkles, Sun, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 
@@ -344,13 +345,32 @@ export default function Home() {
 
 function ReferralsPanel() {
   const { data } = trpc.referrals.list.useQuery();
+  const settings = trpc.referrals.settings.useQuery();
+  const utils = trpc.useUtils();
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [ptsInput, setPtsInput] = useState("");
+  const pts = settings.data?.points ?? 3;
+  const penalty = settings.data?.leavePenalty ?? true;
   const rows = data ?? [];
   const totalJoins = rows.reduce((sum, r) => sum + r.joinCount, 0);
-  const totalPoints = totalJoins * 3;
+  const totalLeft = rows.reduce((sum, r) => sum + r.leaveCount, 0);
+  const totalPoints = rows.reduce((sum, r) => sum + Math.max(0, r.joinCount - r.leaveCount), 0) * pts;
+  const setPoints = trpc.referrals.setPoints.useMutation({
+    onSuccess: d => { toast.success(`امتیاز هر دعوت روی ${d.points} تنظیم شد`); setPtsInput(""); utils.referrals.settings.invalidate(); utils.referrals.list.invalidate(); },
+    onError: e => toast.error(e.message),
+  });
+  const setPenalty = trpc.referrals.setLeavePenalty.useMutation({
+    onSuccess: d => { toast.success(d.leavePenalty ? "کسر امتیاز هنگام خروج فعال شد" : "کسر امتیاز هنگام خروج خاموش شد"); utils.referrals.settings.invalidate(); },
+    onError: e => toast.error(e.message),
+  });
   const copyLink = async (row: { code: string; inviteLink: string }) => {
     try { await navigator.clipboard.writeText(row.inviteLink); setCopiedCode(row.code); setTimeout(() => setCopiedCode(null), 1500); }
     catch { toast.error("کپی خودکار ممکن نشد؛ لینک را دستی انتخاب و کپی کنید"); }
+  };
+  const savePoints = () => {
+    const n = Number(ptsInput);
+    if (!Number.isInteger(n) || n < 1 || n > 1000) { toast.error("عددی صحیح بین ۱ تا ۱۰۰۰ وارد کنید"); return; }
+    setPoints.mutate({ points: n });
   };
   return (
     <section className="mobile-panel panel-referrals space-y-5">
@@ -359,33 +379,52 @@ function ReferralsPanel() {
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
               <CardTitle className="text-lg flex items-center gap-2"><Share2 className="h-5 w-5 text-[#0f766e]" /> دعوت‌ها (افیلیت تلگرام)</CardTitle>
-              <p className="text-sm text-slate-500 mt-1">دانش‌آموز در بات تلگرام نام خود را می‌فرستد → لینک اختصاصی کانال می‌گیرد → هر عضو از طریق لینک = ۳ امتیاز برای او (به‌صورت خودکار در تابلو ثبت می‌شود).</p>
+              <p className="text-sm text-slate-500 mt-1">دانش‌آموز در بات تلگرام نام خود را می‌فرستد → لینک اختصاصی کانال می‌گیرد → هر عضو از طریق لینک = {pts} امتیاز برای او{penalty ? " و اگر عضو کانال را ترک کند، همان امتیاز کسر می‌شود" : ""} (به‌صورت خودکار در تابلو ثبت می‌شود).</p>
             </div>
             <div className="flex items-center gap-2">
               <Badge variant="outline" className="border-slate-200 text-slate-600">{rows.length} لینک</Badge>
-              <Badge variant="secondary" className="bg-[#e6f4f1] text-[#0f766e]">{totalJoins} دعوت موفق</Badge>
+              <Badge variant="secondary" className="bg-[#e6f4f1] text-[#0f766e]">{totalJoins - totalLeft} دعوت موفق</Badge>
+              {totalLeft > 0 && <Badge className="bg-red-100 text-red-700">{totalLeft} خروج</Badge>}
               <Badge className="bg-amber-100 text-amber-700">+{totalPoints} امتیاز</Badge>
             </div>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <div className="rounded-xl border bg-slate-50 p-4 space-y-3">
+            <p className="font-bold text-sm flex items-center gap-2"><Settings2 className="h-4 w-4 text-[#0f766e]" /> تنظیمات امتیاز دعوت</p>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+              <div className="flex items-center gap-2">
+                <Label className="text-xs whitespace-nowrap">امتیاز هر عضو جدید:</Label>
+                <Input type="number" min={1} max={1000} className="h-9 w-24 text-center" value={ptsInput} placeholder={String(pts)} onChange={e => setPtsInput(e.target.value)} />
+                <Button size="sm" className="h-9" onClick={savePoints} disabled={setPoints.isPending || ptsInput === ""}>ذخیره</Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch id="ref-leave-penalty" checked={penalty} onCheckedChange={v => setPenalty.mutate({ enabled: v })} disabled={setPenalty.isPending} />
+                <Label htmlFor="ref-leave-penalty" className="text-xs cursor-pointer">اگر عضو دعوت‌شده کانال را ترک کند، امتیاز کسر شود</Label>
+              </div>
+            </div>
+          </div>
           {rows.length === 0 ? (
             <Empty text="هنوز لینکی ساخته نشده؛ دانش‌آموز در بات تلگرام /start بزند و نام خود را (مطابق سایت) بفرستد تا لینک اختصاصی بگیرد" />
           ) : (
             <div className="space-y-2">
-              {rows.map(r => (
-                <div key={r.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="font-semibold">{r.studentName} <span className="text-xs text-slate-500">({r.className ?? "بدون کلاس"})</span></p>
-                    <p className="text-xs text-slate-500 truncate" dir="ltr">{r.inviteLink || `کد: ${r.code} — لینک هنوز ساخته نشده (بات تنظیم نشده؟)`}</p>
+              {rows.map(r => {
+                const effective = Math.max(0, r.joinCount - r.leaveCount);
+                return (
+                  <div key={r.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="font-semibold">{r.studentName} <span className="text-xs text-slate-500">({r.className ?? "بدون کلاس"})</span></p>
+                      <p className="text-xs text-slate-500 truncate" dir="ltr">{r.inviteLink || `کد: ${r.code} — لینک هنوز ساخته نشده (بات تنظیم نشده؟)`}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Badge variant="outline">{r.joinCount} دعوت</Badge>
+                      {r.leaveCount > 0 && <Badge className="bg-red-100 text-red-700">{r.leaveCount} خروج</Badge>}
+                      <Badge className="bg-amber-100 text-amber-700">+{effective * pts}</Badge>
+                      {r.inviteLink && <Button size="sm" variant="outline" onClick={() => copyLink(r)}>{copiedCode === r.code ? "کپی شد" : "کپی لینک"}</Button>}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Badge variant="outline">{r.joinCount} دعوت</Badge>
-                    <Badge className="bg-amber-100 text-amber-700">+{r.joinCount * 3}</Badge>
-                    {r.inviteLink && <Button size="sm" variant="outline" onClick={() => copyLink(r)}>{copiedCode === r.code ? "کپی شد" : "کپی لینک"}</Button>}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardContent>
