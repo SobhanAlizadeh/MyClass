@@ -158,3 +158,57 @@ export async function saveTeamActivity(input: { teamId: number; date: string; ti
 export async function consumeStudentPoints(input: { studentId: number; date: string; description: string; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const amount = Math.abs(input.points); return db.transaction(async tx => { const row = await tx.select({ totalPoints: students.totalPoints, teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); if (!row[0] || row[0].totalPoints < amount) throw new Error("مانده امتیاز دانش‌آموز کافی نیست"); await tx.insert(activities).values({ studentId: input.studentId, teamId: null, date: input.date, title: "مصرف امتیاز", description: input.description, kind: "negative", points: -amount }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - ${amount}` }).where(eq(students.id, input.studentId)); if (row[0].teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${amount}` }).where(eq(teams.id, row[0].teamId)); }); }
 export async function consumeTeamPoints(input: { teamId: number; date: string; description: string; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const amount = Math.abs(input.points); return db.transaction(async tx => { const team = await tx.select({ totalPoints: teams.totalPoints }).from(teams).where(eq(teams.id, input.teamId)).limit(1); if (!team[0] || team[0].totalPoints < amount) throw new Error("مانده امتیاز تیم کافی نیست"); const members = await tx.select({ id: students.id }).from(students).where(eq(students.teamId, input.teamId)); await tx.insert(activities).values({ studentId: null, teamId: input.teamId, date: input.date, title: "مصرف امتیاز", description: input.description, kind: "negative", points: -amount }); await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${amount}` }).where(eq(teams.id, input.teamId)); const shares = distributeTeamPoints(-amount, members.length); for (let index = 0; index < members.length; index++) { const share = shares[index] ?? 0; if (share) await tx.update(students).set({ totalPoints: sql`${students.totalPoints} + ${share}` }).where(eq(students.id, members[index].id)); } }); }
 export async function saveActivity(input: { studentId: number; date: string; title: string; description?: string; kind: "positive" | "negative" | "neutral"; points: number }) { return saveStudentActivity(input); }
+
+// --- Public (no-login) read-only view for visitors ----------------------------
+// Only exposes: class list, student names + current points, and student activities.
+// Never exposes: attendance, grades, phones/codes, users, school internals.
+export async function getPublicClasses() {
+  const db = await getDb();
+  if (!db) return { schoolName: "", classes: [] as { id: number; name: string; studentCount: number }[] };
+  const [schoolRows, classRows, studentRows] = await Promise.all([
+    db.select({ name: schools.name }).from(schools).limit(1),
+    db.select({ id: classes.id, name: classes.name }).from(classes),
+    db.select({ classId: students.classId }).from(students),
+  ]);
+  const counts = new Map<number, number>();
+  for (const s of studentRows) counts.set(s.classId, (counts.get(s.classId) ?? 0) + 1);
+  return {
+    schoolName: schoolRows[0]?.name ?? "دفترکلاس",
+    classes: classRows.map(c => ({ id: c.id, name: c.name, studentCount: counts.get(c.id) ?? 0 })),
+  };
+}
+
+export async function getPublicClassStudents(classId: number) {
+  const db = await getDb();
+  if (!db) return [] as { id: number; firstName: string; lastName: string; totalPoints: number; teamName: string | null }[];
+  const rows = await db
+    .select({ id: students.id, firstName: students.firstName, lastName: students.lastName, totalPoints: students.totalPoints, teamName: teams.name })
+    .from(students)
+    .leftJoin(teams, eq(students.teamId, teams.id))
+    .where(eq(students.classId, classId));
+  return rows.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName, totalPoints: r.totalPoints, teamName: r.teamName ?? null }));
+}
+
+export async function getPublicStudent(studentId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db
+    .select({ id: students.id, firstName: students.firstName, lastName: students.lastName, totalPoints: students.totalPoints, teamName: teams.name, className: classes.name })
+    .from(students)
+    .leftJoin(teams, eq(students.teamId, teams.id))
+    .leftJoin(classes, eq(students.classId, classes.id))
+    .where(eq(students.id, studentId))
+    .limit(1);
+  if (rows.length === 0) return undefined;
+  const acts = await db
+    .select({ id: activities.id, date: activities.date, title: activities.title, description: activities.description, kind: activities.kind, points: activities.points })
+    .from(activities)
+    .where(eq(activities.studentId, studentId))
+    .orderBy(desc(activities.date), desc(activities.id))
+    .limit(500);
+  const s = rows[0];
+  return {
+    id: s.id, firstName: s.firstName, lastName: s.lastName, totalPoints: s.totalPoints, teamName: s.teamName ?? null, className: s.className ?? null,
+    activities: acts.map(a => ({ id: a.id, date: a.date, title: a.title, description: a.description ?? null, kind: a.kind, points: a.points })),
+  };
+}
