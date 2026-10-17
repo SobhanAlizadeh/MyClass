@@ -363,6 +363,17 @@ function ReferralsPanel() {
     onSuccess: d => { toast.success(d.leavePenalty ? "کسر امتیاز هنگام خروج فعال شد" : "کسر امتیاز هنگام خروج خاموش شد"); utils.referrals.settings.invalidate(); },
     onError: e => toast.error(e.message),
   });
+  const deleteReferral = trpc.referrals.deleteReferral.useMutation({
+    onSuccess: d => {
+      if (d.success) toast.success(d.revoked ? `لینک ${d.code} باطل و حذف شد` : `لینک ${d.code} حذف شد (ابطال تلگرام انجام نشد ولی دیگر امتیازی حساب نمی‌شود)`);
+      else toast.error(d.message || "حذف ممکن نشد");
+      utils.referrals.list.invalidate();
+    },
+    onError: e => toast.error(e.message),
+  });
+  const confirmDeleteReferral = (r: { id: number; studentName: string; code: string }) => {
+    if (window.confirm(`لینک دعوت ${r.studentName} (کد ${r.code}) حذف شود؟\nلینک در تلگرام باطل می‌شود و شمارنده‌های دعوت پاک می‌شوند؛ امتیازهای قبلاً گرفته‌شده باقی می‌مانند.`)) deleteReferral.mutate({ id: r.id });
+  };
   const copyLink = async (row: { code: string; inviteLink: string }) => {
     try { await navigator.clipboard.writeText(row.inviteLink); setCopiedCode(row.code); setTimeout(() => setCopiedCode(null), 1500); }
     catch { toast.error("کپی خودکار ممکن نشد؛ لینک را دستی انتخاب و کپی کنید"); }
@@ -421,6 +432,7 @@ function ReferralsPanel() {
                       {r.leaveCount > 0 && <Badge className="bg-red-100 text-red-700">{r.leaveCount} خروج</Badge>}
                       <Badge className="bg-amber-100 text-amber-700">+{effective * pts}</Badge>
                       {r.inviteLink && <Button size="sm" variant="outline" onClick={() => copyLink(r)}>{copiedCode === r.code ? "کپی شد" : "کپی لینک"}</Button>}
+                      <button type="button" title="حذف لینک دعوت" aria-label={`حذف لینک دعوت ${r.studentName}`} disabled={deleteReferral.isPending} onClick={() => confirmDeleteReferral(r)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-red-200 bg-red-50 text-red-600 transition-colors hover:bg-red-600 hover:text-white disabled:opacity-50"><X className="h-4 w-4" /></button>
                     </div>
                   </div>
                 );

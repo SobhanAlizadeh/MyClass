@@ -490,3 +490,17 @@ export async function listReferrals(): Promise<ReferralStatRow[]> {
   const rows = (Array.isArray(res) ? res : res.rows) ?? [];
   return rows.map((row: any) => ({ id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link ?? ""), createdAt: Number(row.created_at ?? 0), joinCount: Number(row.join_count ?? 0), leaveCount: Number(row.leave_count ?? 0) }));
 }
+
+// حذف کامل یک معرف توسط ادمین (دکمه ضربدر قرمز پنل): ردیف referral و شمارنده‌های join آن پاک می‌شود.
+// خروجی برای ابطال لینک در سمت تلگرام استفاده می‌شود؛ فعالیت‌ها و امتیازهای قبلاً گرفته‌شده دست‌نخورده می‌مانند.
+export async function deleteReferral(id: number): Promise<{ code: string; inviteLink: string; studentId: number } | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureReferralTables(conn);
+  const sel: any = await conn.execute("SELECT id, student_id, code, invite_link FROM referrals WHERE id = ? LIMIT 1", [id]);
+  const row: any = (Array.isArray(sel) ? sel : sel.rows)?.[0];
+  if (!row) return null;
+  await conn.execute("DELETE FROM referral_joins WHERE referral_id = ?", [id]);
+  await conn.execute("DELETE FROM referrals WHERE id = ?", [id]);
+  return { code: String(row.code), inviteLink: String(row.invite_link ?? ""), studentId: Number(row.student_id) };
+}

@@ -4,7 +4,8 @@ import { ONE_YEAR_MS } from "@shared/const";
 import { getEnv } from "./_core/env";
 import { sdk } from "./_core/sdk";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
-import { getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, listReferrals, getReferralSettings, setReferralPoints, setReferralLeavePenalty, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
+import { getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, listReferrals, deleteReferral, getReferralSettings, setReferralPoints, setReferralLeavePenalty, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
+import { revokeTelegramInviteLink } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 export const appRouter = router({
   auth: router({
@@ -55,6 +56,14 @@ export const appRouter = router({
     settings: protectedProcedure.query(() => getReferralSettings()),
     setPoints: protectedProcedure.input(z.object({ points: z.number().int().min(1).max(1000) })).mutation(({ input }) => setReferralPoints(input.points)),
     setLeavePenalty: protectedProcedure.input(z.object({ enabled: z.boolean() })).mutation(({ input }) => setReferralLeavePenalty(input.enabled)),
+    // حذف لینک دعوت (دکمه ضربدر قرمز): ابتدا لینک در تلگرام باطل و سپس ردیف معرف + شمارنده‌ها پاک می‌شود
+    deleteReferral: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input }) => {
+      const info = await deleteReferral(input.id);
+      if (!info) return { success: false as const, revoked: false, code: "", message: "این لینک قبلاً حذف شده یا وجود ندارد" };
+      let revoked = false;
+      if (info.inviteLink) { try { revoked = await revokeTelegramInviteLink(info.inviteLink); } catch { revoked = false; } }
+      return { success: true as const, revoked, code: info.code };
+    }),
   }),
   school: router({
     dashboard: protectedProcedure.query(() => getDashboardData()),

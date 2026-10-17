@@ -67,6 +67,14 @@ async function tg(method: string, body: unknown): Promise<any> {
 const sendMessage = (chatId: number | string, text: string, replyMarkup?: unknown) =>
   tg("sendMessage", { chat_id: chatId, text, reply_markup: replyMarkup });
 
+// ابطال لینک دعوت از سمت تلگرام — بعد از اینکه ادمین لینک را از پنل حذف کرد،
+// حتی اگر کسی لینک را ذخیره کرده باشد دیگر با آن عضو کانال نمی‌شود.
+export async function revokeTelegramInviteLink(link: string): Promise<boolean> {
+  if (!link) return false;
+  const res = await tg("revokeChatInviteLink", { chat_id: channelId(), invite_link: link });
+  return Boolean(res?.ok);
+}
+
 // ---------- helpers ----------
 function todayISO(): string { return new Date().toISOString().slice(0, 10); }
 function displayName(u: any): string {
