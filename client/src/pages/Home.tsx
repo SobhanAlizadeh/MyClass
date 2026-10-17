@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CalendarDays, Check, ClipboardList, Edit3, Medal, Moon, Plus, School, Sparkles, Sun, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
+import { CalendarDays, Check, ClipboardList, Edit3, Lock, Medal, Moon, Plus, School, Sparkles, Sun, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 
@@ -357,6 +357,23 @@ function LoginScreen() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [remaining, setRemaining] = useState(0);
+  // وضعیت قفل ورود: بعد از ۲ بار رمز اشتباه، فرم لاگین جای خود را به قفل زمان‌دار می‌دهد
+  const loginState = trpc.auth.loginState.useQuery(undefined, { refetchInterval: 15000 });
+  const locked = loginState.data?.locked ?? false;
+  const failedCount = loginState.data?.failedCount ?? 0;
+  const maxAttempts = loginState.data?.maxAttempts ?? 2;
+  useEffect(() => { setRemaining(loginState.data?.remainingSeconds ?? 0); }, [loginState.data?.remainingSeconds]);
+  useEffect(() => {
+    if (!locked) return;
+    const timer = setInterval(() => setRemaining(s => {
+      if (s <= 1) { void utils.auth.loginState.invalidate(); return 0; }
+      return s - 1;
+    }), 1000);
+    return () => clearInterval(timer);
+  }, [locked, utils]);
+  const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+  const ss = String(remaining % 60).padStart(2, "0");
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: async data => {
       // Store the session token for browsers/iframes that block cookies.
@@ -364,8 +381,9 @@ function LoginScreen() {
       setErrorMsg("");
       await utils.auth.me.invalidate();
     },
-    onError: error => {
+    onError: async error => {
       setErrorMsg(error.message || "خطا در ورود");
+      await utils.auth.loginState.invalidate(); // اگر قفل شده باشد، فوراً UI قفل می‌آید
     },
   });
   const submit = (e: React.FormEvent) => {
@@ -373,5 +391,23 @@ function LoginScreen() {
     if (!username.trim() || !password) return setErrorMsg("نام کاربری و رمز عبور را وارد کنید");
     loginMutation.mutate({ username: username.trim(), password });
   };
-  return <div dir="rtl" className="min-h-screen bg-[#f4f7f6] grid place-items-center p-6"><Card className="max-w-md w-full border-0 shadow-xl rounded-3xl"><CardContent className="p-9 text-center"><div className="h-16 w-16 mx-auto rounded-2xl bg-[#0f766e] text-white grid place-items-center"><School className="h-8 w-8" /></div><h1 className="text-2xl font-black mt-6">دفترکلاس</h1><p className="text-slate-500 mt-3 leading-7">برای مدیریت مدرسه، کلاس، تیم و دانش‌آموز وارد حساب خود شوید.</p><form onSubmit={submit} className="mt-7 space-y-4 text-right"><div className="space-y-2"><Label htmlFor="login-username" className="text-xs font-semibold text-slate-600">نام کاربری</Label><Input id="login-username" dir="ltr" className="text-left" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" placeholder="admin" /></div><div className="space-y-2"><Label htmlFor="login-password" className="text-xs font-semibold text-slate-600">رمز عبور</Label><Input id="login-password" dir="ltr" className="text-left" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" placeholder="••••••••" /></div>{errorMsg && <p className="text-sm text-red-600 font-semibold text-center bg-red-50 rounded-xl py-2">{errorMsg}</p>}<Button type="submit" disabled={loginMutation.isPending} className="w-full bg-[#0f766e] hover:bg-[#0b5d57] h-11">{loginMutation.isPending ? "در حال ورود…" : "ورود به پنل مدیریت"}</Button></form></CardContent></Card></div>;
+  return <div dir="rtl" className="min-h-screen bg-[#f4f7f6] grid place-items-center p-6"><Card className="max-w-md w-full border-0 shadow-xl rounded-3xl"><CardContent className="p-9 text-center"><div className="h-16 w-16 mx-auto rounded-2xl bg-[#0f766e] text-white grid place-items-center"><School className="h-8 w-8" /></div><h1 className="text-2xl font-black mt-6">دفترکلاس</h1><p className="text-slate-500 mt-3 leading-7">برای مدیریت مدرسه، کلاس، تیم و دانش‌آموز وارد حساب خود شوید.</p>
+    {locked ? (
+      <div className="mt-7 rounded-2xl bg-red-50 border border-red-100 p-6 text-center" data-testid="login-locked">
+        <div className="h-14 w-14 mx-auto rounded-2xl bg-red-100 grid place-items-center"><Lock className="h-7 w-7 text-red-500" /></div>
+        <p className="font-black text-red-700 mt-3">ورود موقتاً قفل شده است</p>
+        <p className="text-sm text-red-600 mt-2 leading-6">رمز عبور چند بار اشتباه وارد شده و برای حفظ امنیت حساب، فرم ورود موقتاً غیرفعال شده است.</p>
+        <p className="text-3xl font-black text-red-700 mt-4 tracking-widest" dir="ltr">{mm}:{ss}</p>
+        <p className="text-xs text-slate-500 mt-3">بعد از پایان زمان‌سنج، فرم ورود دوباره فعال می‌شود</p>
+      </div>
+    ) : (
+      <form onSubmit={submit} className="mt-7 space-y-4 text-right">
+        {!errorMsg && failedCount > 0 && <p className="text-xs font-semibold text-amber-700 text-center bg-amber-50 rounded-xl py-2">هشدار: {failedCount} بار رمز اشتباه وارد شده؛ پس از {maxAttempts} بار اشتباه، ورود موقتاً قفل می‌شود</p>}
+        <div className="space-y-2"><Label htmlFor="login-username" className="text-xs font-semibold text-slate-600">نام کاربری</Label><Input id="login-username" dir="ltr" className="text-left" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" placeholder="admin" /></div>
+        <div className="space-y-2"><Label htmlFor="login-password" className="text-xs font-semibold text-slate-600">رمز عبور</Label><Input id="login-password" dir="ltr" className="text-left" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" placeholder="••••••••" /></div>
+        {errorMsg && <p className="text-sm text-red-600 font-semibold text-center bg-red-50 rounded-xl py-2">{errorMsg}</p>}
+        <Button type="submit" disabled={loginMutation.isPending} className="w-full bg-[#0f766e] hover:bg-[#0b5d57] h-11">{loginMutation.isPending ? "در حال ورود…" : "ورود به پنل مدیریت"}</Button>
+      </form>
+    )}
+  </CardContent></Card></div>;
 }

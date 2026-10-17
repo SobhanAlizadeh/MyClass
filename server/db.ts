@@ -212,3 +212,49 @@ export async function getPublicStudent(studentId: number) {
     activities: acts.map(a => ({ id: a.id, date: a.date, title: a.title, description: a.description ?? null, kind: a.kind, points: a.points })),
   };
 }
+
+// --- Login lockout: after N wrong passwords, login is locked for a while -----
+// Stored in TiDB (works across Workers isolates). Epoch-millis only, no TZ issues.
+const LOGIN_KEY = "admin";
+export const LOGIN_MAX_ATTEMPTS = 2;
+export const LOGIN_LOCK_MS = 15 * 60 * 1000; // 15 minutes
+let _rawConn: ReturnType<typeof connect> | null = null;
+function getRawConn() { if (!_rawConn && process.env.DATABASE_URL) _rawConn = connect({ url: process.env.DATABASE_URL }); return _rawConn; }
+let _loginTableReady: Promise<unknown> | null = null;
+function ensureLoginTable(conn: ReturnType<typeof connect>) {
+  if (!_loginTableReady) _loginTableReady = conn.execute("CREATE TABLE IF NOT EXISTS login_attempts (key_name VARCHAR(64) PRIMARY KEY, failed_count INT NOT NULL DEFAULT 0, locked_until_ms BIGINT NOT NULL DEFAULT 0)");
+  return _loginTableReady;
+}
+export type LoginLockState = { locked: boolean; remainingSeconds: number; failedCount: number; maxAttempts: number };
+const noLock = (): LoginLockState => ({ locked: false, remainingSeconds: 0, failedCount: 0, maxAttempts: LOGIN_MAX_ATTEMPTS });
+export async function getLoginLockState(): Promise<LoginLockState> {
+  const conn = getRawConn();
+  if (!conn) return noLock();
+  await ensureLoginTable(conn);
+  const res: any = await conn.execute("SELECT failed_count, locked_until_ms FROM login_attempts WHERE key_name = ?", [LOGIN_KEY]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  const now = Date.now();
+  const lockedUntil = Number(row?.locked_until_ms ?? 0);
+  const remainingSeconds = lockedUntil > now ? Math.ceil((lockedUntil - now) / 1000) : 0;
+  // شمارنده فقط بعد از «انقضای یک قفل» از نو شروع می‌شود؛ در حالت عادی بدون قفل، تلاش‌های ناموفق انباشته می‌شوند
+  const expired = lockedUntil > 0 && lockedUntil <= now;
+  const failedCount = remainingSeconds > 0 || !expired ? Number(row?.failed_count ?? 0) : 0;
+  return { locked: remainingSeconds > 0, remainingSeconds, failedCount, maxAttempts: LOGIN_MAX_ATTEMPTS };
+}
+export async function registerLoginFailure(): Promise<LoginLockState> {
+  const conn = getRawConn();
+  if (!conn) return noLock();
+  await ensureLoginTable(conn);
+  const current = await getLoginLockState();
+  if (current.locked) return current;
+  const failed = current.failedCount + 1; // expired lock already reports failedCount=0 → fresh start
+  const lockUntil = failed >= LOGIN_MAX_ATTEMPTS ? Date.now() + LOGIN_LOCK_MS : 0;
+  await conn.execute("INSERT INTO login_attempts (key_name, failed_count, locked_until_ms) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE failed_count = VALUES(failed_count), locked_until_ms = VALUES(locked_until_ms)", [LOGIN_KEY, failed, lockUntil]);
+  return { locked: lockUntil > 0, remainingSeconds: lockUntil > 0 ? Math.ceil((lockUntil - Date.now()) / 1000) : 0, failedCount: failed, maxAttempts: LOGIN_MAX_ATTEMPTS };
+}
+export async function resetLoginFailures(): Promise<void> {
+  const conn = getRawConn();
+  if (!conn) return;
+  await ensureLoginTable(conn);
+  await conn.execute("DELETE FROM login_attempts WHERE key_name = ?", [LOGIN_KEY]);
+}

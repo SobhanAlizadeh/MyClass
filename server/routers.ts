@@ -4,19 +4,34 @@ import { ONE_YEAR_MS } from "@shared/const";
 import { getEnv } from "./_core/env";
 import { sdk } from "./_core/sdk";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
-import { getDb, upsertUser, getDashboardData, getPublicClasses, getPublicClassStudents, getPublicStudent, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
+import { getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 export const appRouter = router({
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
+    loginState: publicProcedure.query(() => getLoginLockState()),
     login: publicProcedure
       .input(z.object({ username: z.string().min(1, "نام کاربری لازم است"), password: z.string().min(1, "رمز عبور لازم است") }))
       .mutation(async ({ input, ctx }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست؛ اتصال MySQL را بررسی کنید" });
+        // قفل ورود: بعد از چند بار رمز اشتباه، حتی رمز درست هم پذیرفته نمی‌شود
+        const lock = await getLoginLockState();
+        if (lock.locked) {
+          const minutes = Math.max(1, Math.ceil(lock.remainingSeconds / 60));
+          throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: `به دلیل ${lock.maxAttempts} بار رمز اشتباه، ورود موقتاً قفل شده است. حدود ${minutes} دقیقه دیگر دوباره تلاش کنید` });
+        }
         const env = getEnv();
         const ok = input.username.trim() === env.adminUsername && input.password === env.adminPassword;
-        if (!ok) throw new TRPCError({ code: "UNAUTHORIZED", message: "نام کاربری یا رمز عبور اشتباه است" });
+        if (!ok) {
+          const next = await registerLoginFailure();
+          if (next.locked) {
+            const minutes = Math.max(1, Math.ceil(next.remainingSeconds / 60));
+            throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: `رمز ${next.maxAttempts} بار اشتباه وارد شد؛ ورود موقتاً قفل شد و حدود ${minutes} دقیقه در دسترس نیست` });
+          }
+          throw new TRPCError({ code: "UNAUTHORIZED", message: `نام کاربری یا رمز عبور اشتباه است (${next.failedCount} از ${next.maxAttempts})` });
+        }
+        await resetLoginFailures();
         const openId = `local_${env.adminUsername}`;
         const displayName = "مدیر دفترکلاس";
         await upsertUser({ openId, name: displayName, loginMethod: "password", role: "admin", lastSignedIn: new Date() });
