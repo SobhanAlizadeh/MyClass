@@ -258,3 +258,153 @@ export async function resetLoginFailures(): Promise<void> {
   await ensureLoginTable(conn);
   await conn.execute("DELETE FROM login_attempts WHERE key_name = ?", [LOGIN_KEY]);
 }
+
+// --- Telegram referral (affiliate) system ------------------------------------
+// هر دانش‌آموز (از روی سایت) در بات تلگرام نامش را می‌فرستد → کد/لینک اختصاصی
+// کانال می‌گیرد؛ هر عضوی که با لینک او وارد کانال شود +REFERRAL_POINTS امتیاز می‌گیرد.
+export const REFERRAL_POINTS = 3;
+export type ReferralCandidate = { id: number; firstName: string; lastName: string; className: string | null };
+export type ReferralCore = { id: number; studentId: number; studentName: string; className: string | null; code: string; inviteLink: string };
+export type ReferralStatRow = { id: number; studentId: number; studentName: string; className: string | null; code: string; inviteLink: string; createdAt: number; joinCount: number };
+
+let _refTablesReady: Promise<unknown> | null = null;
+function ensureReferralTables(conn: ReturnType<typeof connect>) {
+  if (!_refTablesReady) _refTablesReady = (async () => {
+    await conn.execute("CREATE TABLE IF NOT EXISTS referrals (id BIGINT AUTO_INCREMENT PRIMARY KEY, student_id INT NOT NULL, code VARCHAR(16) NOT NULL UNIQUE, invite_link VARCHAR(255) NOT NULL DEFAULT '', telegram_user_id BIGINT NULL, telegram_chat_id BIGINT NULL, telegram_username VARCHAR(64) NULL, created_at BIGINT NOT NULL, INDEX idx_ref_student (student_id), INDEX idx_ref_tg (telegram_user_id))");
+    await conn.execute("CREATE TABLE IF NOT EXISTS referral_joins (id BIGINT AUTO_INCREMENT PRIMARY KEY, referral_id BIGINT NOT NULL, telegram_user_id BIGINT NOT NULL, telegram_name VARCHAR(128) NULL, joined_at BIGINT NOT NULL, UNIQUE KEY uq_ref_user (referral_id, telegram_user_id))");
+  })().catch(e => { _refTablesReady = null; throw e; });
+  return _refTablesReady;
+}
+
+function genReferralCode(): string {
+  // بدون نویسه‌های گیج‌کننده (0/O و 1/I)
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+}
+
+// جستجوی دانش‌آموز برای بات: تطبیق کامل → شروع‌شونده → شامل (بعد از نرمال‌سازی فارسی)
+export async function findStudentsByName(query: string): Promise<ReferralCandidate[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const q = normFa(query);
+  if (q.length < 2) return [];
+  const rows = await db.select({ id: students.id, firstName: students.firstName, lastName: students.lastName, className: classes.name }).from(students).leftJoin(classes, eq(students.classId, classes.id));
+  const scored = rows
+    .map(r => {
+      const full = normFa(`${r.firstName} ${r.lastName}`);
+      const rev = normFa(`${r.lastName} ${r.firstName}`);
+      let score = -1;
+      if (full === q || rev === q) score = 0;
+      else if (full.startsWith(q) || rev.startsWith(q)) score = 1;
+      else if (full.includes(q) || rev.includes(q)) score = 2;
+      return { r, score };
+    })
+    .filter(x => x.score >= 0)
+    .sort((a, b) => a.score - b.score);
+  return scored.slice(0, 8).map(x => ({ id: x.r.id, firstName: x.r.firstName, lastName: x.r.lastName, className: x.r.className ?? null }));
+}
+
+export async function getOrCreateReferral(studentId: number, tg?: { userId?: number; chatId?: number; username?: string }): Promise<ReferralCore | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureReferralTables(conn);
+  const sres: any = await conn.execute("SELECT id, firstName, lastName, classId FROM students WHERE id = ?", [studentId]);
+  const srow: any = (Array.isArray(sres) ? sres : sres.rows)?.[0];
+  if (!srow) return null;
+  const cres: any = await conn.execute("SELECT name FROM classes WHERE id = ?", [srow.classId]);
+  const className: string | null = (Array.isArray(cres) ? cres : cres.rows)?.[0]?.name ?? null;
+  let rres: any = await conn.execute("SELECT id, code, invite_link FROM referrals WHERE student_id = ? ORDER BY id ASC LIMIT 1", [studentId]);
+  let row: any = (Array.isArray(rres) ? rres : rres.rows)?.[0];
+  if (!row) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await conn.execute("INSERT INTO referrals (student_id, code, telegram_user_id, telegram_chat_id, telegram_username, created_at) VALUES (?, ?, ?, ?, ?, ?)", [studentId, genReferralCode(), tg?.userId ?? null, tg?.chatId ?? null, tg?.username ?? null, Date.now()]);
+        break;
+      } catch (e: any) {
+        // code تکراری (1062) → کد جدید؛ بقیه خطاها را بالا بده
+        if (String(e?.message ?? e).includes("Duplicate") && attempt === 2) throw e;
+        if (!String(e?.message ?? e).includes("Duplicate")) throw e;
+      }
+    }
+    rres = await conn.execute("SELECT id, code, invite_link FROM referrals WHERE student_id = ? ORDER BY id ASC LIMIT 1", [studentId]);
+    row = (Array.isArray(rres) ? rres : rres.rows)?.[0];
+  } else if (tg?.userId) {
+    await conn.execute("UPDATE referrals SET telegram_user_id = ?, telegram_chat_id = ?, telegram_username = ? WHERE id = ?", [tg.userId, tg.chatId ?? null, tg.username ?? null, row.id]);
+  }
+  if (!row) return null;
+  return { id: Number(row.id), studentId, studentName: `${srow.firstName} ${srow.lastName}`, className, code: String(row.code), inviteLink: String(row.invite_link ?? "") };
+}
+
+export async function setReferralInviteLink(referralId: number, link: string): Promise<void> {
+  const conn = getRawConn();
+  if (!conn) return;
+  await ensureReferralTables(conn);
+  await conn.execute("UPDATE referrals SET invite_link = ? WHERE id = ?", [link, referralId]);
+}
+
+export async function getReferralByInviteLink(link: string): Promise<ReferralCore | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureReferralTables(conn);
+  const res: any = await conn.execute("SELECT r.id, r.student_id, r.code, r.invite_link, s.firstName, s.lastName, c.name AS class_name FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId WHERE r.invite_link = ? LIMIT 1", [link]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  if (!row) return null;
+  return { id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link) };
+}
+
+export async function getReferralByCode(code: string): Promise<ReferralCore | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureReferralTables(conn);
+  const res: any = await conn.execute("SELECT r.id, r.student_id, r.code, r.invite_link, s.firstName, s.lastName, c.name AS class_name FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId WHERE r.code = ? LIMIT 1", [code]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  if (!row) return null;
+  return { id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link) };
+}
+
+export async function getLatestReferralByTelegramUser(tgUserId: number): Promise<ReferralCore | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureReferralTables(conn);
+  const res: any = await conn.execute("SELECT r.id, r.student_id, r.code, r.invite_link, s.firstName, s.lastName, c.name AS class_name FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId WHERE r.telegram_user_id = ? ORDER BY r.id DESC LIMIT 1", [tgUserId]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  if (!row) return null;
+  return { id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link) };
+}
+
+// ثبت عضویت؛ true فقط برای اولین بار (عضو تکراری دوباره امتیاز نمی‌گیرد)
+export async function recordReferralJoin(referralId: number, tgUserId: number, tgName?: string): Promise<boolean> {
+  const conn = getRawConn();
+  if (!conn) return false;
+  await ensureReferralTables(conn);
+  const existing: any = await conn.execute("SELECT id FROM referral_joins WHERE referral_id = ? AND telegram_user_id = ? LIMIT 1", [referralId, tgUserId]);
+  if ((Array.isArray(existing) ? existing : existing.rows)?.length) return false;
+  try {
+    await conn.execute("INSERT INTO referral_joins (referral_id, telegram_user_id, telegram_name, joined_at) VALUES (?, ?, ?, ?)", [referralId, tgUserId, tgName ?? null, Date.now()]);
+    return true;
+  } catch {
+    return false; // رقابت همزمان با کلید یونیک حل می‌شود
+  }
+}
+
+export async function countReferralJoins(referralId: number): Promise<number> {
+  const conn = getRawConn();
+  if (!conn) return 0;
+  await ensureReferralTables(conn);
+  const res: any = await conn.execute("SELECT COUNT(*) AS n FROM referral_joins WHERE referral_id = ?", [referralId]);
+  return Number((Array.isArray(res) ? res : res.rows)?.[0]?.n ?? 0);
+}
+
+export async function listReferrals(): Promise<ReferralStatRow[]> {
+  const conn = getRawConn();
+  if (!conn) return [];
+  await ensureReferralTables(conn);
+  const res: any = await conn.execute(
+    "SELECT r.id, r.student_id, r.code, r.invite_link, r.created_at, s.firstName, s.lastName, c.name AS class_name, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id) AS join_count FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId ORDER BY join_count DESC, r.id ASC"
+  );
+  const rows = (Array.isArray(res) ? res : res.rows) ?? [];
+  return rows.map((row: any) => ({ id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link ?? ""), createdAt: Number(row.created_at ?? 0), joinCount: Number(row.join_count ?? 0) }));
+}

@@ -195,6 +195,7 @@
   .app-shell[data-panel="points"] .mobile-panel:not(.panel-points) { display: none !important; }
   .app-shell[data-panel="reports"] .mobile-panel:not(.panel-reports) { display: none !important; }
   .app-shell[data-panel="management"] .mobile-panel:not(.panel-management) { display: none !important; }
+  .app-shell[data-panel="referrals"] .mobile-panel:not(.panel-referrals) { display: none !important; }
   .app-shell main { padding: 1rem !important; }
   .app-shell main.space-y-7 > :not([hidden]) ~ :not([hidden]) { margin-top: 1rem; }
 }

@@ -4,7 +4,7 @@ import { ONE_YEAR_MS } from "@shared/const";
 import { getEnv } from "./_core/env";
 import { sdk } from "./_core/sdk";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
-import { getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
+import { getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, listReferrals, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 export const appRouter = router({
   auth: router({
@@ -48,6 +48,10 @@ export const appRouter = router({
     classes: publicProcedure.query(() => getPublicClasses()),
     classStudents: publicProcedure.input(z.object({ classId: z.number() })).query(({ input }) => getPublicClassStudents(input.classId)),
     student: publicProcedure.input(z.object({ studentId: z.number() })).query(({ input }) => getPublicStudent(input.studentId)),
+  }),
+  // پنل «دعوت‌ها» — آمار لینک‌های اختصاصی تلگرام (فقط مدیر)
+  referrals: router({
+    list: protectedProcedure.query(() => listReferrals()),
   }),
   school: router({
     dashboard: protectedProcedure.query(() => getDashboardData()),

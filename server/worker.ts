@@ -11,6 +11,7 @@
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "./routers";
 import { createFetchContext } from "./_core/context";
+import { handleTelegramWebhook } from "./telegram";
 
 export interface Env {
   DATABASE_URL: string;
@@ -18,6 +19,10 @@ export interface Env {
   ADMIN_USERNAME?: string;
   ADMIN_PASSWORD?: string;
   APP_ID?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_CHANNEL_ID?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  TELEGRAM_REFERRAL_POINTS?: string;
 }
 
 export default {
@@ -31,6 +36,15 @@ export default {
     if (env.ADMIN_USERNAME) process.env.ADMIN_USERNAME = env.ADMIN_USERNAME;
     if (env.ADMIN_PASSWORD) process.env.ADMIN_PASSWORD = env.ADMIN_PASSWORD;
     if (env.APP_ID) process.env.APP_ID = env.APP_ID;
+    if (env.TELEGRAM_BOT_TOKEN) process.env.TELEGRAM_BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
+    if (env.TELEGRAM_CHANNEL_ID) process.env.TELEGRAM_CHANNEL_ID = env.TELEGRAM_CHANNEL_ID;
+    if (env.TELEGRAM_WEBHOOK_SECRET) process.env.TELEGRAM_WEBHOOK_SECRET = env.TELEGRAM_WEBHOOK_SECRET;
+    if (env.TELEGRAM_REFERRAL_POINTS) process.env.TELEGRAM_REFERRAL_POINTS = env.TELEGRAM_REFERRAL_POINTS;
+
+    if (url.pathname === "/api/telegram-webhook") {
+      if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+      return handleTelegramWebhook(req);
+    }
 
     if (url.pathname.startsWith("/api/trpc")) {
       return fetchRequestHandler({
