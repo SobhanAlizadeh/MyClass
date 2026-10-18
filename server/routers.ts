@@ -54,7 +54,7 @@ export const appRouter = router({
   referrals: router({
     list: protectedProcedure.query(() => listReferrals()),
     settings: protectedProcedure.query(() => getReferralSettings()),
-    setPoints: protectedProcedure.input(z.object({ points: z.number().int().min(1).max(1000) })).mutation(({ input }) => setReferralPoints(input.points)),
+    setPoints: protectedProcedure.input(z.object({ points: z.number().min(0.1).max(1000) })).mutation(({ input }) => setReferralPoints(input.points)),
     setLeavePenalty: protectedProcedure.input(z.object({ enabled: z.boolean() })).mutation(({ input }) => setReferralLeavePenalty(input.enabled)),
     // حذف لینک دعوت (دکمه ضربدر قرمز): ابتدا لینک در تلگرام باطل و سپس ردیف معرف + شمارنده‌ها پاک می‌شود
     deleteReferral: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input }) => {

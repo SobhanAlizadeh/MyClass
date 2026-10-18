@@ -45,7 +45,7 @@ function webhookSecret(): string { return process.env.TELEGRAM_WEBHOOK_SECRET ??
 // امتیاز مؤثر هر دعوت: تنظیم ادمین (DB) ← سکرت env ← پیش‌فرض ۳
 async function referralPoints(): Promise<number> {
   try { return (await getReferralSettings()).points; }
-  catch { const n = Number(process.env.TELEGRAM_REFERRAL_POINTS ?? REFERRAL_POINTS); return Number.isFinite(n) && n > 0 ? Math.trunc(n) : REFERRAL_POINTS; }
+  catch { const n = Number(process.env.TELEGRAM_REFERRAL_POINTS ?? REFERRAL_POINTS); return Number.isFinite(n) && n > 0 ? Math.max(0.1, Math.round(n * 100) / 100) : REFERRAL_POINTS; }
 }
 
 // ---------- Telegram API ----------

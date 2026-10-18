@@ -16,6 +16,8 @@ const normFa = (value: string) => value.trim().replace(/\s+/g, " ").replace(/ي/
 // SQL-side mirror of normFa so existing rows compare identically.
 const normSqlCol = (col: any) => sql`lower(trim(REPLACE(REPLACE(${col}, 'ي', 'ی'), 'ك', 'ک')))`;
 const dupClause = (col: any, value: string) => sql`${normSqlCol(col)} = lower(${normFa(value)})`;
+// گرد کردن به دو رقم اعشار — امتیازهای اعشاری (مثل ۰٫۵) بدون خطای float (مثل 4.199999999999999) نمایش داده شوند
+const round2 = (n: number) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 async function assertNoDuplicate(exec: any, table: any, where: any, message: string) {
   const rows = await exec.select({ hit: sql`1` }).from(table).where(where).limit(1);
@@ -37,7 +39,7 @@ export function distributeTeamPoints(total: number, memberCount: number) {
   const remainderScaled = scaledTotal - baseScaled * memberCount;
   return Array.from({ length: memberCount }, (_, index) => (baseScaled + (index < Math.abs(remainderScaled) ? Math.sign(remainderScaled) : 0)) / precision);
 }
-export async function getDashboardData() { const db = await getDb(); if (!db) return { schools: [], classes: [], teams: [], students: [], attendance: [], subjects: [], grades: [], activities: [] }; const [schoolRows, classRows, teamRows, studentRows, attendanceRows, subjectRows, gradeRows, activityRows, transferRows] = await Promise.all([db.select().from(schools), db.select().from(classes), db.select().from(teams), db.select().from(students), db.select().from(attendance).orderBy(desc(attendance.date), desc(attendance.id)).limit(200), db.select().from(subjects).orderBy(desc(subjects.id)).limit(200), db.select().from(grades).orderBy(desc(grades.date)).limit(200), db.select().from(activities).orderBy(desc(activities.date), desc(activities.id)).limit(200), db.select().from(studentTeamTransfers).orderBy(desc(studentTeamTransfers.createdAt), desc(studentTeamTransfers.id)).limit(200)]); const uniqueAttendanceRows = attendanceRows.filter((row, index, rows) => index === rows.findIndex(other => other.studentId === row.studentId && other.date === row.date)); return { schools: schoolRows, classes: classRows, teams: teamRows, students: studentRows, attendance: uniqueAttendanceRows, subjects: subjectRows, grades: gradeRows, activities: activityRows, teamTransfers: transferRows }; }
+export async function getDashboardData() { const db = await getDb(); if (!db) return { schools: [], classes: [], teams: [], students: [], attendance: [], subjects: [], grades: [], activities: [] }; const [schoolRows, classRows, teamRows, studentRows, attendanceRows, subjectRows, gradeRows, activityRows, transferRows] = await Promise.all([db.select().from(schools), db.select().from(classes), db.select().from(teams), db.select().from(students), db.select().from(attendance).orderBy(desc(attendance.date), desc(attendance.id)).limit(200), db.select().from(subjects).orderBy(desc(subjects.id)).limit(200), db.select().from(grades).orderBy(desc(grades.date)).limit(200), db.select().from(activities).orderBy(desc(activities.date), desc(activities.id)).limit(200), db.select().from(studentTeamTransfers).orderBy(desc(studentTeamTransfers.createdAt), desc(studentTeamTransfers.id)).limit(200)]); const uniqueAttendanceRows = attendanceRows.filter((row, index, rows) => index === rows.findIndex(other => other.studentId === row.studentId && other.date === row.date)); return { schools: schoolRows, classes: classRows, teams: teamRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), students: studentRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), attendance: uniqueAttendanceRows, subjects: subjectRows, grades: gradeRows, activities: activityRows, teamTransfers: transferRows }; }
 export async function createSchool(input: { name: string; address?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
@@ -186,7 +188,7 @@ export async function getPublicClassStudents(classId: number) {
     .from(students)
     .leftJoin(teams, eq(students.teamId, teams.id))
     .where(eq(students.classId, classId));
-  return rows.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName, totalPoints: r.totalPoints, teamName: r.teamName ?? null }));
+  return rows.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName, totalPoints: round2(r.totalPoints), teamName: r.teamName ?? null }));
 }
 
 export async function getPublicStudent(studentId: number) {
@@ -208,8 +210,8 @@ export async function getPublicStudent(studentId: number) {
     .limit(500);
   const s = rows[0];
   return {
-    id: s.id, firstName: s.firstName, lastName: s.lastName, totalPoints: s.totalPoints, teamName: s.teamName ?? null, className: s.className ?? null,
-    activities: acts.map(a => ({ id: a.id, date: a.date, title: a.title, description: a.description ?? null, kind: a.kind, points: a.points })),
+    id: s.id, firstName: s.firstName, lastName: s.lastName, totalPoints: round2(s.totalPoints), teamName: s.teamName ?? null, className: s.className ?? null,
+    activities: acts.map(a => ({ id: a.id, date: a.date, title: a.title, description: a.description ?? null, kind: a.kind, points: round2(a.points) })),
   };
 }
 
@@ -292,7 +294,8 @@ async function setSetting(key: string, value: string): Promise<void> {
 
 const REFERRAL_POINTS_KEY = "referral_points";
 const REFERRAL_LEAVE_PENALTY_KEY = "referral_leave_penalty";
-function clampReferralPoints(n: number): number { return Math.max(1, Math.min(1000, Math.trunc(n))); }
+// اعشار مجاز است (تا دو رقم، مثل ۰٫۵ یا ۲٫۷۵) — بازه ۰٫۱ تا ۱۰۰۰
+function clampReferralPoints(n: number): number { return Math.max(0.1, Math.min(1000, round2(n))); }
 export type ReferralSettings = { points: number; pointsIsDefault: boolean; leavePenalty: boolean };
 
 // امتیاز دعوت مؤثر: تنظیم ادمین ← سکرت env ← پیش‌فرض ۳

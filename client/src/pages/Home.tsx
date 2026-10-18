@@ -355,6 +355,10 @@ function ReferralsPanel() {
   const totalJoins = rows.reduce((sum, r) => sum + r.joinCount, 0);
   const totalLeft = rows.reduce((sum, r) => sum + r.leaveCount, 0);
   const totalPoints = rows.reduce((sum, r) => sum + Math.max(0, r.joinCount - r.leaveCount), 0) * pts;
+  // نمایش تمیز امتیاز اعشاری (حداکثر دو رقم — حذف خطای float مثل 7.500000000001)
+  const fmtPts = (n: number) => Number(n.toFixed(2));
+  // تبدیل ارقام فارسی/عربی و جداکننده‌های اعشار ایرانی (٫ و /) به فرمت قابل‌پارس
+  const normalizeNumStr = (s: string) => s.trim().replace(/[۰-۹]/g, d => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d))).replace(/[٠-٩]/g, d => String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٫/]/g, ".");
   const setPoints = trpc.referrals.setPoints.useMutation({
     onSuccess: d => { toast.success(`امتیاز هر دعوت روی ${d.points} تنظیم شد`); setPtsInput(""); utils.referrals.settings.invalidate(); utils.referrals.list.invalidate(); },
     onError: e => toast.error(e.message),
@@ -379,9 +383,9 @@ function ReferralsPanel() {
     catch { toast.error("کپی خودکار ممکن نشد؛ لینک را دستی انتخاب و کپی کنید"); }
   };
   const savePoints = () => {
-    const n = Number(ptsInput);
-    if (!Number.isInteger(n) || n < 1 || n > 1000) { toast.error("عددی صحیح بین ۱ تا ۱۰۰۰ وارد کنید"); return; }
-    setPoints.mutate({ points: n });
+    const n = Number(normalizeNumStr(ptsInput));
+    if (!Number.isFinite(n) || n < 0.1 || n > 1000) { toast.error("عددی بین ۰٫۱ تا ۱۰۰۰ وارد کنید (اعشار مجاز است، مثل ۰٫۵ یا ۲٫۵)"); return; }
+    setPoints.mutate({ points: Math.round(n * 100) / 100 });
   };
   return (
     <section className="mobile-panel panel-referrals space-y-5">
@@ -396,7 +400,7 @@ function ReferralsPanel() {
               <Badge variant="outline" className="border-slate-200 text-slate-600">{rows.length} لینک</Badge>
               <Badge variant="secondary" className="bg-[#e6f4f1] text-[#0f766e]">{totalJoins - totalLeft} دعوت موفق</Badge>
               {totalLeft > 0 && <Badge className="bg-red-100 text-red-700">{totalLeft} خروج</Badge>}
-              <Badge className="bg-amber-100 text-amber-700">+{totalPoints} امتیاز</Badge>
+              <Badge className="bg-amber-100 text-amber-700">+{fmtPts(totalPoints)} امتیاز</Badge>
             </div>
           </div>
         </CardHeader>
@@ -406,7 +410,7 @@ function ReferralsPanel() {
             <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
               <div className="flex items-center gap-2">
                 <Label className="text-xs whitespace-nowrap">امتیاز هر عضو جدید:</Label>
-                <Input type="number" min={1} max={1000} className="h-9 w-24 text-center" value={ptsInput} placeholder={String(pts)} onChange={e => setPtsInput(e.target.value)} />
+                <Input type="number" min={0.1} max={1000} step={0.1} inputMode="decimal" className="h-9 w-28 text-center" value={ptsInput} placeholder={String(pts)} onChange={e => setPtsInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") savePoints(); }} title="اعشار مجاز است — مثلاً ۰٫۵ یا ۲٫۵" />
                 <Button size="sm" className="h-9" onClick={savePoints} disabled={setPoints.isPending || ptsInput === ""}>ذخیره</Button>
               </div>
               <div className="flex items-center gap-2">
@@ -430,7 +434,7 @@ function ReferralsPanel() {
                     <div className="flex items-center gap-2 shrink-0">
                       <Badge variant="outline">{r.joinCount} دعوت</Badge>
                       {r.leaveCount > 0 && <Badge className="bg-red-100 text-red-700">{r.leaveCount} خروج</Badge>}
-                      <Badge className="bg-amber-100 text-amber-700">+{effective * pts}</Badge>
+                      <Badge className="bg-amber-100 text-amber-700">+{fmtPts(effective * pts)}</Badge>
                       {r.inviteLink && <Button size="sm" variant="outline" onClick={() => copyLink(r)}>{copiedCode === r.code ? "کپی شد" : "کپی لینک"}</Button>}
                       <button type="button" title="حذف لینک دعوت" aria-label={`حذف لینک دعوت ${r.studentName}`} disabled={deleteReferral.isPending} onClick={() => confirmDeleteReferral(r)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-red-200 bg-red-50 text-red-600 transition-colors hover:bg-red-600 hover:text-white disabled:opacity-50"><X className="h-4 w-4" /></button>
                     </div>
