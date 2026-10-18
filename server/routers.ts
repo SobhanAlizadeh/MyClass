@@ -4,7 +4,7 @@ import { ONE_YEAR_MS } from "@shared/const";
 import { getEnv } from "./_core/env";
 import { sdk } from "./_core/sdk";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
-import { getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, listReferrals, deleteReferral, getReferralSettings, setReferralPoints, setReferralLeavePenalty, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
+import { getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, listReferrals, getReferralReport, deleteReferral, getReferralSettings, setReferralPoints, setReferralLeavePenalty, createSchool, updateSchool, deleteSchool, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade } from "./db";
 import { revokeTelegramInviteLink } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 export const appRouter = router({
@@ -53,6 +53,8 @@ export const appRouter = router({
   // پنل «دعوت‌ها» — آمار لینک‌های اختصاصی تلگرام + تنظیمات امتیاز (فقط مدیر)
   referrals: router({
     list: protectedProcedure.query(() => listReferrals()),
+    // گزارش کامل: آیدی تلگرام هر دانش‌آموز + دعوت‌شدگان هر لینک + بدون‌لینک‌ها (پنل + چاپ)
+    report: protectedProcedure.query(() => getReferralReport()),
     settings: protectedProcedure.query(() => getReferralSettings()),
     setPoints: protectedProcedure.input(z.object({ points: z.number().min(0.1).max(1000) })).mutation(({ input }) => setReferralPoints(input.points)),
     setLeavePenalty: protectedProcedure.input(z.object({ enabled: z.boolean() })).mutation(({ input }) => setReferralLeavePenalty(input.enabled)),

@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CalendarDays, Check, ClipboardList, Edit3, Lock, Medal, Moon, Plus, School, Settings2, Share2, Sparkles, Sun, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
+import { CalendarDays, Check, ClipboardList, Edit3, Lock, Medal, Moon, Plus, School, Send, Settings2, Share2, Sparkles, Sun, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
@@ -97,6 +97,75 @@ tr { break-inside: avoid; page-break-inside: avoid; }
 <h2>فعالیت‌ها (جدیدترین اول)</h2>
 <table><thead><tr><th style="width:38px;">#</th><th>فعالیت</th><th style="width:95px;">تاریخ</th><th>دانش‌آموز / تیم</th><th style="width:70px;">امتیاز</th></tr></thead><tbody>${activityRows}</tbody></table>
 ${membersBlock}${classStudentsBlock}
+<div class="foot">این گزارش به‌صورت خودکار از سامانه دفترکلاس تولید شده است</div>
+</div></body></html>`;
+};
+
+// ---------- چاپ گزارش دعوت‌های افیلیت ----------
+// سند مستقل: خلاصه لینک‌ها با آیدی تلگرام صاحب هر لینک + دعوت‌شدگان هر لینک + دانش‌آموزان بدون لینک
+type PrintReferralJoin = { telegramUserId: number; telegramName: string | null; joinedAt: string; status: string };
+type PrintReferralRow = { studentName: string; className: string; code: string; telegramUserId: number | null; telegramUsername: string | null; createdAt: string; joinCount: number; leaveCount: number; effectivePoints: string; joins: PrintReferralJoin[] };
+
+const buildReferralPrintHtml = (input: {
+  schoolName: string;
+  printDate: string;
+  pointsPerJoin: string;
+  leavePenalty: boolean;
+  rows: PrintReferralRow[];
+  noLinkStudents: { name: string; className: string }[];
+}) => {
+  const sumJoins = input.rows.reduce((s, r) => s + r.joinCount, 0);
+  const sumLeft = input.rows.reduce((s, r) => s + r.leaveCount, 0);
+  const statsCells = [
+    { k: "لینک‌های ساخته‌شده", v: String(input.rows.length) },
+    { k: "دعوت‌های موفق", v: String(sumJoins - sumLeft) },
+    { k: "خروج‌ها", v: String(sumLeft) },
+    { k: "امتیاز هر دعوت", v: escapeHtml(input.pointsPerJoin) },
+    { k: "دانش‌آموزان بدون لینک", v: String(input.noLinkStudents.length) },
+  ];
+  const summaryRows = input.rows.length === 0
+    ? `<tr><td colspan="10" style="text-align:center;color:#64748b;padding:14px;">هنوز لینکی ساخته نشده است</td></tr>`
+    : input.rows.map((r, i) => `<tr><td>${i + 1}</td><td><b>${escapeHtml(r.studentName)}</b></td><td>${escapeHtml(r.className || "—")}</td><td dir="ltr">${escapeHtml(r.code)}</td><td dir="ltr">${r.telegramUserId ?? "—"}</td><td dir="ltr">${r.telegramUsername ? "@" + escapeHtml(r.telegramUsername) : "—"}</td><td>${escapeHtml(r.createdAt)}</td><td>${r.joinCount}</td><td>${r.leaveCount}</td><td class="pos">${escapeHtml(r.effectivePoints)}</td></tr>`).join("");
+  const joinsBlocks = input.rows.map(r => {
+    const head = `<h3>${escapeHtml(r.studentName)} — کد ${escapeHtml(r.code)} (${r.joins.length} دعوت)</h3>`;
+    const body = r.joins.length === 0
+      ? `<p class="none">هنوز کسی با این لینک عضو نشده است</p>`
+      : `<table><thead><tr><th style="width:38px;">#</th><th>نام در تلگرام</th><th style="width:130px;">آیدی تلگرام</th><th style="width:110px;">تاریخ عضویت</th><th style="width:95px;">وضعیت</th></tr></thead><tbody>${r.joins.map((j, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(j.telegramName || "—")}</td><td dir="ltr">${j.telegramUserId}</td><td>${escapeHtml(j.joinedAt)}</td><td class="${j.status === "left" ? "neg" : "pos"}">${j.status === "left" ? "خارج شده" : "عضو فعال"}</td></tr>`).join("")}</tbody></table>`;
+    return head + body;
+  }).join("");
+  const noLinkBlock = input.noLinkStudents.length === 0 ? "" : `<h2>دانش‌آموزان بدون لینک تلگرام (هنوز در بات استارت نزده‌اند)</h2><table><thead><tr><th style="width:38px;">#</th><th>نام دانش‌آموز</th><th>کلاس</th></tr></thead><tbody>${input.noLinkStudents.map((s, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.className || "—")}</td></tr>`).join("")}</tbody></table>`;
+  return `<!DOCTYPE html>
+<html dir="rtl" lang="fa"><head><meta charset="utf-8"><title>گزارش دعوت‌های افیلیت</title><style>
+@page { size: A4; margin: 12mm; }
+* { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+html, body { background: #ffffff; color: #0f172a; font-family: Tahoma, "Segoe UI", "Vazirmatn", "Noto Sans Arabic", sans-serif; margin: 0; padding: 0; }
+.wrap { padding: 6px 2px; }
+.head { text-align: center; border-bottom: 2px solid #0f766e; padding-bottom: 10px; margin-bottom: 12px; }
+.head h1 { margin: 0; font-size: 19px; color: #0f172a; }
+.head .sub { color: #475569; font-size: 12px; margin-top: 4px; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.stat { flex: 1 1 140px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px 10px; text-align: center; background: #f8fafc; }
+.stat .k { color: #64748b; font-size: 11px; }
+.stat .v { font-size: 15px; font-weight: bold; margin-top: 3px; color: #0f172a; }
+h2 { font-size: 14px; margin: 14px 0 8px; color: #0f172a; border-right: 3px solid #0f766e; padding-right: 8px; }
+h3 { font-size: 12.5px; margin: 12px 0 6px; color: #0f172a; }
+p.none { color: #64748b; font-size: 11.5px; margin: 4px 0 10px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 6px; }
+th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: right; vertical-align: top; }
+th { background: #e2e8f0; color: #0f172a; }
+tbody tr:nth-child(even) { background: #f8fafc; }
+tr { break-inside: avoid; page-break-inside: avoid; }
+.pos { color: #047857; font-weight: bold; white-space: nowrap; }
+.neg { color: #b91c1c; font-weight: bold; white-space: nowrap; }
+.foot { margin-top: 14px; text-align: center; color: #64748b; font-size: 10.5px; border-top: 1px solid #cbd5e1; padding-top: 8px; }
+</style></head><body><div class="wrap">
+<div class="head"><h1>${escapeHtml(input.schoolName)} — گزارش دعوت‌های افیلیت</h1><p class="sub">تاریخ چاپ: ${escapeHtml(input.printDate)} · امتیاز هر دعوت: ${escapeHtml(input.pointsPerJoin)}${input.leavePenalty ? " · خروج عضو = کسر امتیاز" : ""} · تهیه‌شده با دفترکلاس</p></div>
+<div class="stats">${statsCells.map(s => `<div class="stat"><div class="k">${s.k}</div><div class="v">${s.v}</div></div>`).join("")}</div>
+<h2>خلاصه لینک‌های دعوت</h2>
+<table><thead><tr><th style="width:34px;">#</th><th>دانش‌آموز</th><th>کلاس</th><th>کد</th><th>آیدی تلگرام</th><th>یوزرنیم</th><th>تاریخ ساخت</th><th style="width:55px;">دعوت</th><th style="width:55px;">خروج</th><th style="width:70px;">امتیاز</th></tr></thead><tbody>${summaryRows}</tbody></table>
+<h2>دعوت‌شدگان هر لینک</h2>
+${joinsBlocks || `<p class="none">لینکی برای نمایش وجود ندارد</p>`}
+${noLinkBlock}
 <div class="foot">این گزارش به‌صورت خودکار از سامانه دفترکلاس تولید شده است</div>
 </div></body></html>`;
 };
@@ -338,20 +407,24 @@ export default function Home() {
         <Card className="border-0 shadow-sm rounded-2xl"><CardHeader><CardTitle className="text-lg">ثبت سریع</CardTitle><p className="text-sm text-slate-500">نمره فقط برای دانش‌آموز است؛ امتیاز می‌تواند فردی یا تیمی باشد.</p></CardHeader><CardContent><Tabs defaultValue="activity" dir="rtl"><TabsList className="grid grid-cols-2 w-full bg-slate-100"><TabsTrigger value="activity">فعالیت و امتیاز</TabsTrigger><TabsTrigger value="grade">نمره دانش‌آموز</TabsTrigger></TabsList><TabsContent value="activity" className="space-y-4 pt-4"><Field label="کلاس"><Select value={entryClassId} onValueChange={(v: string) => { setEntryClassId(v); setTeamId(""); setStudentId(""); }}><SelectTrigger><SelectValue placeholder="ابتدا کلاس را انتخاب کنید" /></SelectTrigger><SelectContent>{classes.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select></Field><div className="grid grid-cols-2 gap-2"><Button variant={target === "student" ? "default" : "outline"} onClick={() => setTarget("student")} className={target === "student" ? "bg-[#0f766e]" : ""}>امتیاز دانش‌آموز</Button><Button variant={target === "team" ? "default" : "outline"} onClick={() => setTarget("team")} className={target === "team" ? "bg-[#0f766e]" : ""}>امتیاز تیم</Button></div>{target === "student" ? <><Field label="تیم"><TeamSelect value={teamId} onChange={(v: string) => { setTeamId(v); setStudentId(""); }} teams={entryTeams}/></Field><Field label="دانش‌آموز"><StudentSelect value={studentId} onChange={setStudentId} students={entryStudents}/></Field></> : <Field label="تیم"><TeamSelect value={teamId} onChange={setTeamId} teams={entryTeams}/></Field>}<Field label="شرح فعالیت"><Input value={activityTitle} onChange={e => setActivityTitle(e.target.value)} placeholder={target === "team" ? "مثلاً: همکاری تیمی عالی" : "مثلاً: همکاری عالی در کار گروهی"} /></Field><div className="grid grid-cols-2 gap-3"><Field label="نوع"><Select value={activityKind} onValueChange={v => setActivityKind(v as Kind)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="positive">مثبت</SelectItem><SelectItem value="negative">منفی</SelectItem><SelectItem value="neutral">خنثی</SelectItem></SelectContent></Select></Field><Field label="امتیاز کل"><Input value={points} onChange={e => setPoints(e.target.value)} type="number" /></Field></div><Button onClick={submitActivity} className="w-full bg-[#0f766e] hover:bg-[#0b5d57]">ثبت فعالیت و امتیاز <Sparkles className="mr-2 h-4 w-4" /></Button>{target === "team" && selectedTeam && <p className="text-xs rounded-xl bg-teal-50 text-teal-800 p-3">این امتیاز بین {students.filter(s => s.teamId === selectedTeam.id).length} عضو تیم تقسیم می‌شود و امتیاز کامل نیز به خود تیم اضافه خواهد شد.</p>}</TabsContent><TabsContent value="grade" className="space-y-4 pt-4"><Field label="کلاس"><Select value={entryClassId} onValueChange={(v: string) => { setEntryClassId(v); setStudentId(""); }}><SelectTrigger><SelectValue placeholder="ابتدا کلاس را انتخاب کنید" /></SelectTrigger><SelectContent>{classes.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select></Field><Field label="تیم"><TeamSelect value={teamId} onChange={(v: string) => { setTeamId(v); setStudentId(""); }} teams={entryTeams}/></Field><Field label="دانش‌آموز"><StudentSelect value={studentId} onChange={setStudentId} students={entryStudents}/></Field><Field label="درس"><Select value={gradeSubjectId} onValueChange={setGradeSubjectId}><SelectTrigger><SelectValue placeholder="انتخاب درس" /></SelectTrigger><SelectContent>{subjects.filter(s => { const st = students.find(x => x.id === Number(studentId)); return !st || s.classId === st.classId; }).map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent></Select></Field><Field label="دسته‌بندی نمره"><Select value={gradeType} onValueChange={v => setGradeType(v as GradeType)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="class">امتحان کلاسی</SelectItem><SelectItem value="midterm">امتحان میان‌ترم</SelectItem><SelectItem value="final">امتحان پایان‌ترم</SelectItem></SelectContent></Select></Field><Field label="عنوان ارزیابی (اختیاری)"><Input value={gradeTitle} onChange={e => setGradeTitle(e.target.value)} placeholder="مثلاً آزمون فصل سوم" /></Field><div className="grid grid-cols-2 gap-3"><Field label="نمره کسب‌شده"><Input value={score} onChange={e => setScore(e.target.value)} type="number" /></Field><Field label="از"><Input value={maxScore} onChange={e => setMaxScore(e.target.value)} type="number" /></Field></div><Button onClick={submitGrade} className="w-full bg-[#1d4ed8] hover:bg-[#1e40af]">ثبت نمره <Plus className="mr-2 h-4 w-4" /></Button></TabsContent></Tabs>{selectedStudent && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">دانش‌آموز انتخاب‌شده: <b>{selectedStudent.firstName} {selectedStudent.lastName}</b></p>}</CardContent></Card></div>
       <section className="mobile-panel panel-management mb-5"><Card className="border-0 shadow-sm rounded-2xl"><CardHeader><CardTitle className="text-lg">تعریف درس</CardTitle><p className="text-sm text-slate-500">درس را به کلاس وصل کنید تا هنگام ثبت نمره برای دانش‌آموز انتخاب شود.</p></CardHeader><CardContent><div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end"><Field label="نام درس"><Input value={subjectName} onChange={e => setSubjectName(e.target.value)} placeholder="مثلاً ریاضی" /></Field><Field label="کلاس"><Select value={subjectClassId} onValueChange={setSubjectClassId}><SelectTrigger><SelectValue placeholder="انتخاب کلاس" /></SelectTrigger><SelectContent>{classes.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select></Field><Button onClick={submitSubject}><Plus className="mr-2 h-4 w-4" />افزودن درس</Button></div><div className="mt-4 border-t pt-4"><p className="mb-2 text-sm font-bold">درس‌های تعریف‌شده</p><div className="grid grid-cols-1 md:grid-cols-2 gap-2">{subjects.length === 0 ? <p className="text-xs text-slate-400">هنوز درسی ثبت نشده است</p> : subjects.map(subject => <div key={subject.id} className="flex items-center gap-2 rounded-lg bg-slate-50 p-2 text-sm">{editingSubjectId === subject.id ? <><Input className="h-8" value={editingSubjectName} onChange={e => setEditingSubjectName(e.target.value)} /><Select value={editingSubjectClassId} onValueChange={setEditingSubjectClassId}><SelectTrigger className="h-8"><SelectValue /></SelectTrigger><SelectContent>{classes.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select><Button size="sm" onClick={saveSubjectEdit}>ذخیره</Button><Button size="sm" variant="ghost" onClick={() => setEditingSubjectId(null)}>لغو</Button></> : <><span className="flex-1">{subject.name} <span className="text-xs text-slate-500">({classes.find(c => c.id === subject.classId)?.name ?? "کلاس حذف‌شده"})</span></span><Button size="icon" variant="ghost" onClick={() => { setEditingSubjectId(subject.id); setEditingSubjectName(subject.name); setEditingSubjectClassId(String(subject.classId)); }}><Edit3 className="h-4 w-4 text-blue-600" /></Button><Button size="icon" variant="ghost" onClick={() => { if (window.confirm("این درس حذف شود؟ نمره‌ها باقی می‌مانند.")) deleteSubject.mutate({ id: subject.id }); }}><Trash2 className="h-4 w-4 text-red-500" /></Button></>}</div>)}</div></div></CardContent></Card></section><section className="mobile-panel panel-points mb-5"><Card className="border-0 shadow-sm rounded-2xl"><CardHeader><CardTitle className="text-lg">مصرف امتیاز</CardTitle><p className="text-sm text-slate-500">امتیاز مصرفی از موجودی دانش‌آموز یا تیم کم و با توضیح در گزارش ثبت می‌شود.</p></CardHeader><CardContent><div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end"><Field label="کلاس"><Select value={spendClassId} onValueChange={(v: string) => { setSpendClassId(v); setSpendTeamId(""); setSpendStudentId(""); }}><SelectTrigger><SelectValue placeholder="ابتدا کلاس" /></SelectTrigger><SelectContent>{classes.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select></Field><div><Label>هدف مصرف</Label><div className="grid grid-cols-2 gap-2 mt-2"><Button size="sm" variant={spendTarget === "student" ? "default" : "outline"} onClick={() => setSpendTarget("student")}>دانش‌آموز</Button><Button size="sm" variant={spendTarget === "team" ? "default" : "outline"} onClick={() => setSpendTarget("team")}>تیم</Button></div></div>{spendTarget === "student" ? <><Field label="تیم"><Select value={spendTeamId} onValueChange={(v: string) => { setSpendTeamId(v); setSpendStudentId(""); }}><SelectTrigger><SelectValue placeholder="انتخاب تیم" /></SelectTrigger><SelectContent>{spendTeams.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent></Select></Field><Field label="دانش‌آموز"><Select value={spendStudentId} onValueChange={setSpendStudentId}><SelectTrigger><SelectValue placeholder="انتخاب دانش‌آموز" /></SelectTrigger><SelectContent>{spendStudents.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.firstName} {s.lastName}</SelectItem>)}</SelectContent></Select></Field></> : <Field label="تیم"><Select value={spendTeamId} onValueChange={setSpendTeamId}><SelectTrigger><SelectValue placeholder="انتخاب تیم" /></SelectTrigger><SelectContent>{spendTeams.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent></Select></Field>}<div><Label>مقدار امتیاز</Label><Input type="number" min="1" value={spendPoints} onChange={e => setSpendPoints(e.target.value)} /></div><div><Label>توضیح مصرف</Label><Input value={spendNote} onChange={e => setSpendNote(e.target.value)} placeholder="مثلاً خرید جایزه" /></div></div><p className="mt-3 text-sm text-slate-600">مانده امتیاز: <b>{spendTarget === "student" ? (students.find(s => String(s.id) === spendStudentId)?.totalPoints ?? 0) : (teams.find(t => String(t.id) === spendTeamId)?.totalPoints ?? 0)}</b></p><Button className="mt-4 w-full md:w-auto" onClick={spendScore}><Plus className="mr-2 h-4 w-4" />ثبت مصرف امتیاز</Button></CardContent></Card></section><section className="mobile-panel panel-reports report-layout grid grid-cols-1 xl:grid-cols-[.85fr_1.15fr] gap-5"><Card className="border-0 shadow-sm rounded-2xl"><CardHeader><CardTitle className="text-lg">تیم‌های کلاس</CardTitle><p className="text-sm text-slate-500">امتیاز تیم شامل امتیازهای مستقیم تیم است</p></CardHeader><CardContent className="space-y-3">{visibleTeams.length === 0 ? <Empty text="هنوز تیمی ساخته نشده است" /> : [...visibleTeams].sort((a,b) => b.totalPoints-a.totalPoints).slice(0,6).map((t, i) => <div key={t.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-50"><div className="flex items-center gap-3"><span className="h-8 w-8 rounded-lg bg-white grid place-items-center font-black text-sm text-slate-500">{i+1}</span><div><p className="font-semibold">{t.name}</p><p className="text-xs text-slate-500">{students.filter(s => s.teamId === t.id).length} عضو</p></div></div><span className={`font-black ${t.totalPoints >= 0 ? "text-[#0f766e]" : "text-red-500"}`}>{t.totalPoints >= 0 ? "+" : ""}{t.totalPoints}</span></div>)}</CardContent></Card><Card id="print-report" className="border-0 shadow-sm rounded-2xl"><CardHeader className="flex-row items-center justify-between"><div><CardTitle className="text-lg">گزارش فعالیت‌ها</CardTitle><p className="text-sm text-slate-500">تمام فعالیت‌های ثبت‌شده — جدیدترین اول (بدون محدودیت تاریخ)</p></div><Button size="sm" variant="outline" onClick={handlePrintReport}><ClipboardList className="mr-2 h-4 w-4"/> چاپ گزارش</Button></CardHeader><CardContent className="space-y-4"><div className="hidden print:block mb-4 border-b border-slate-200 pb-3"><p className="text-base font-black">{schools[0]?.name ?? "دفترکلاس"} — گزارش فعالیت‌ها</p><p className="mt-1 text-sm text-slate-600">{reportScope === "class" ? `دامنه: کل ${reportClassLabel}` : reportScope === "team" ? `دامنه: تیم ${selectedReportTeam?.name ?? "—"} (${reportClassLabel})` : `دامنه: دانش‌آموز ${reportStudent ? `${reportStudent.firstName} ${reportStudent.lastName}` : "—"} (${reportClassLabel})`}</p><p className="text-sm text-slate-600">تاریخ چاپ: {formatJalali(today)} · تعداد فعالیت‌ها: {reportRows.length} · جمع امتیاز: {reportTotalPoints >= 0 ? "+" : ""}{reportTotalPoints}</p></div><div className="grid grid-cols-1 md:grid-cols-3 gap-2"><Button size="sm" variant={reportScope === "class" ? "default" : "outline"} onClick={() => setReportScope("class")}>کل کلاس</Button><Button size="sm" variant={reportScope === "team" ? "default" : "outline"} onClick={() => setReportScope("team")}>تیم</Button><Button size="sm" variant={reportScope === "student" ? "default" : "outline"} onClick={() => setReportScope("student")}>دانش‌آموز</Button></div><Field label="کلاس گزارش" className="print:hidden"><Select value={activeReportClassId} onValueChange={value => { setReportClassId(value); setReportTeamId(""); setReportStudentId(""); }}><SelectTrigger><SelectValue placeholder="انتخاب کلاس" /></SelectTrigger><SelectContent>{classes.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent></Select></Field>{reportScope === "class" && <div className="rounded-xl border border-slate-100 bg-white p-4"><div className="flex items-center justify-between mb-3"><p className="font-bold">دانش‌آموزان کلاس و امتیاز فعلی</p><span className="text-xs text-slate-500">{reportClassStudents.length} نفر · جمع {classStudentsSum >= 0 ? "+" : ""}{classStudentsSum}</span></div>{reportClassStudents.length === 0 ? <p className="text-sm text-slate-400">دانش‌آموزی در این کلاس ثبت نشده است</p> : <div className="space-y-2">{rankedReportClassStudents.map((member, index) => <div key={member.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><div className="flex items-center gap-2"><span className="h-7 w-7 rounded-lg bg-white grid place-items-center font-black text-xs text-slate-500">{index + 1}</span><div><p className="text-sm font-semibold">{member.firstName} {member.lastName}</p><p className="text-[11px] text-slate-500">{teams.find(t => t.id === member.teamId)?.name ?? "بدون تیم"}</p></div></div><span className={`font-bold text-sm ${member.totalPoints >= 0 ? "text-emerald-600" : "text-red-500"}`}>{member.totalPoints >= 0 ? "+" : ""}{member.totalPoints}</span></div>)}</div>}</div>}{reportScope === "team" && <Field label="تیم گزارش"><Select value={reportTeamId} onValueChange={setReportTeamId}><SelectTrigger><SelectValue placeholder="انتخاب تیم" /></SelectTrigger><SelectContent>{reportClassTeams.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent></Select></Field>}{reportScope === "student" && <><Field label="تیم گزارش"><Select value={reportTeamId} onValueChange={(value: string) => { setReportTeamId(value); setReportStudentId(""); }}><SelectTrigger><SelectValue placeholder="ابتدا تیم را انتخاب کنید" /></SelectTrigger><SelectContent>{reportClassTeams.map(t => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent></Select></Field><Field label="دانش‌آموز گزارش"><Select value={activeReportStudentId} onValueChange={setReportStudentId}><SelectTrigger><SelectValue placeholder="انتخاب دانش‌آموز" /></SelectTrigger><SelectContent>{reportStudentOptions.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.firstName} {s.lastName}</SelectItem>)}</SelectContent></Select></Field></>}{reportScope === "student" && reportStudent && <div className="grid grid-cols-2 gap-3 rounded-xl bg-amber-50 p-4 text-sm"><div><p className="text-slate-500">امتیاز کل دانش‌آموز</p><p className="text-xl font-black text-amber-700">{reportStudent.totalPoints >= 0 ? "+" : ""}{reportStudent.totalPoints}</p></div><div><p className="text-slate-500">امتیاز تیم</p><p className="text-xl font-black text-amber-700">{reportStudentTeam ? `${reportStudentTeam.totalPoints >= 0 ? "+" : ""}${reportStudentTeam.totalPoints}` : "0"}</p></div></div>}{reportStudent && <div className={`rounded-xl border border-slate-100 bg-white p-4 ${reportScope === "student" ? "" : "print:hidden"}`}><div className="mb-3 flex items-center justify-between"><p className="font-bold">مدیریت نمرات دانش‌آموز</p><span className="text-xs text-slate-500">{reportStudentGrades.length} نمره</span></div>{reportStudentGrades.length === 0 ? <p className="text-sm text-slate-400">هنوز نمره‌ای برای این دانش‌آموز ثبت نشده است</p> : <div className="space-y-2">{reportStudentGrades.map(grade => { const subject = subjects.find(subjectRow => subjectRow.id === grade.subjectId); return <div key={grade.id} className="rounded-lg bg-slate-50 p-3">{editingGradeId === grade.id ? <div className="grid grid-cols-1 md:grid-cols-5 gap-2 items-end"><Field label="دسته‌بندی"><Select value={editingGradeType} onValueChange={v => setEditingGradeType(v as GradeType)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="class">امتحان کلاسی</SelectItem><SelectItem value="midterm">امتحان میان‌ترم</SelectItem><SelectItem value="final">امتحان پایان‌ترم</SelectItem></SelectContent></Select></Field><Field label="درس"><Select value={editingGradeSubjectId} onValueChange={setEditingGradeSubjectId}><SelectTrigger><SelectValue placeholder="درس" /></SelectTrigger><SelectContent>{subjects.filter(subjectRow => subjectRow.classId === reportStudent.classId).map(subjectRow => <SelectItem key={subjectRow.id} value={String(subjectRow.id)}>{subjectRow.name}</SelectItem>)}</SelectContent></Select></Field><Field label="عنوان"><Input value={editingGradeTitle} onChange={e => setEditingGradeTitle(e.target.value)} /></Field><Field label="نمره"><Input type="number" value={editingGradeScore} onChange={e => setEditingGradeScore(e.target.value)} /></Field><div className="flex gap-1"><Button size="sm" onClick={() => saveGradeEdit(grade)}>ذخیره</Button><Button size="sm" variant="ghost" onClick={() => setEditingGradeId(null)}>لغو</Button></div></div> : <div className="flex items-center justify-between gap-3"><div><p className="font-semibold">{subject?.name ?? "درس حذف‌شده"} · {grade.title}</p><p className="text-xs text-slate-500">{gradeTypeLabels[grade.gradeType as GradeType] ?? "امتحان کلاسی"} · {formatJalaliShort(grade.date)}</p></div><div className="flex items-center gap-3"><span className="font-black text-blue-700">{grade.score} / {grade.maxScore}</span><Button size="icon" variant="ghost" onClick={() => startGradeEdit(grade)}><Edit3 className="h-4 w-4 text-blue-600" /></Button><Button size="icon" variant="ghost" onClick={() => { if (window.confirm("این نمره حذف شود؟")) deleteGrade.mutate({ id: grade.id }); }}><Trash2 className="h-4 w-4 text-red-500" /></Button></div></div>}</div>; })}</div>}</div>}{reportStudent && reportStudentTransfers.length > 0 && <div className={`rounded-xl border border-slate-100 bg-white p-4 ${reportScope === "student" ? "" : "print:hidden"}`}><div className="mb-3 flex items-center justify-between"><p className="font-bold">تاریخچه تغییر تیم</p><span className="text-xs text-slate-500">{reportStudentTransfers.length} انتقال</span></div><div className="space-y-2">{reportStudentTransfers.map(transfer => { const from = teams.find(team => team.id === transfer.fromTeamId)?.name ?? "بدون تیم"; const to = teams.find(team => team.id === transfer.toTeamId)?.name ?? "بدون تیم"; return <div key={transfer.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm"><span>{from} ← {to}</span><span className="text-xs text-slate-500">{formatJalaliShort(transfer.date)} · انتقال {transfer.movedPoints >= 0 ? "+" : ""}{transfer.movedPoints} امتیاز</span></div>; })}</div></div>}{reportScope === "team" && selectedReportTeam && <div className="grid grid-cols-2 gap-3 rounded-xl bg-teal-50 p-4 text-sm"><div><p className="text-slate-500">امتیاز کل تیم</p><p className="text-xl font-black text-[#0f766e]">{selectedReportTeam.totalPoints >= 0 ? "+" : ""}{selectedReportTeam.totalPoints}</p></div><div><p className="text-slate-500">امتیاز کل فعالیت‌ها</p><p className="text-xl font-black text-[#0f766e]">{selectedTeamTotalPoints >= 0 ? "+" : ""}{selectedTeamTotalPoints}</p></div></div>}{reportScope === "team" && selectedReportTeam && <div className="rounded-xl border border-slate-100 bg-white p-4"><div className="flex items-center justify-between mb-3"><p className="font-bold">اعضای تیم و امتیازها</p><span className="text-xs text-slate-500">{selectedTeamMembers.length} نفر</span></div>{selectedTeamMembers.length === 0 ? <p className="text-sm text-slate-400">عضوی برای این تیم ثبت نشده است</p> : <div className="space-y-2">{selectedTeamMembers.map(member => <div key={member.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span className="text-sm font-semibold">{member.firstName} {member.lastName}</span><span className={`font-bold ${member.totalPoints >= 0 ? "text-emerald-600" : "text-red-500"}`}>{member.totalPoints >= 0 ? "+" : ""}{member.totalPoints}</span></div>)}</div>}</div>}{reportScope === "team" && selectedReportTeam && <div className="rounded-xl border border-slate-100 bg-white p-4"><p className="mb-3 font-bold">نمودار امتیاز اعضای تیم</p><div className="h-64 w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={teamChartData} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" tick={{ fontSize: 11 }} /><YAxis /><ChartTooltip /><Bar dataKey="امتیاز" fill="#0f766e" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></div></div>}{reportScope === "student" && reportStudent && <div className="rounded-xl border border-slate-100 bg-white p-4"><p className="mb-3 font-bold">نمودار امتیاز و مصرف دانش‌آموز</p><div className="h-56 w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={studentChartData}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" /><YAxis /><ChartTooltip /><Bar dataKey="مقدار" fill="#d97706" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></div></div>}{reportRows.length === 0 ? <Empty text="برای این کلاس/انتخاب فعالیتی ثبت نشده است — از فیلترهای بالا کلاس یا تیم دیگری را انتخاب کنید" /> : <div className="space-y-2">{reportRows.map(a => { const s = a.studentId === null ? undefined : students.find(x => x.id === a.studentId); const t = a.teamId === null ? undefined : teams.find(x => x.id === a.teamId); const positive = a.points >= 0; return <div key={a.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-3"><div className="flex items-center gap-3"><div className={`h-9 w-9 rounded-lg grid place-items-center ${positive ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-500"}`}>{positive ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}</div><div><p className="font-semibold text-sm">{a.title}</p><p className="text-xs text-slate-500">{formatJalaliShort(a.date)} · {s ? `${s.firstName} ${s.lastName}` : t ? `فعالیت تیمی: ${t.name}` : "فعالیت تیمی"}</p></div></div><span className={`font-bold text-sm ${positive ? "text-emerald-600" : "text-red-500"}`}>{a.points >= 0 ? "+" : ""}{a.points}</span></div>})}</div>}</CardContent></Card></section>
       <div className="mobile-panel panel-management"><Management data={{ schools, classes, teams, students }} schoolName={schoolName} setSchoolName={setSchoolName} schoolId={schoolId} setSchoolId={setSchoolId} className={className} setClassName={setClassName} teamName={teamName} setTeamName={setTeamName} teamClassId={teamClassId} setTeamClassId={setTeamClassId} studentFirstName={studentFirstName} setStudentFirstName={setStudentFirstName} studentLastName={studentLastName} setStudentLastName={setStudentLastName} studentClassId={studentClassId} setStudentClassId={(value: string) => { setStudentClassId(value); setStudentTeamId("none"); }} studentTeamId={studentTeamId} setStudentTeamId={setStudentTeamId} studentTeams={studentTeams} submitSchool={submitSchool} submitClass={submitClass} submitTeam={submitTeam} submitStudent={submitStudent} startEdit={startEdit} editing={editing} editName={editName} setEditName={setEditName} editTeamId={editTeamId} setEditTeamId={setEditTeamId} saveEdit={saveEdit} cancelEdit={() => setEditing(null)} confirmDelete={confirmDelete} deleteSchool={deleteSchool} deleteClass={deleteClass} deleteTeam={deleteTeam} deleteStudent={deleteStudent} /></div>
-      <ReferralsPanel />
+      <ReferralsPanel schoolName={schools[0]?.name ?? "دفترکلاس"} />
     </main>
   </div>;
 }
 
-function ReferralsPanel() {
-  const { data } = trpc.referrals.list.useQuery();
+function ReferralsPanel({ schoolName }: { schoolName: string }) {
+  // گزارش کامل: لینک‌ها + آیدی تلگرام صاحب هر لینک + دعوت‌شدگان + دانش‌آموزان بدون لینک (همان منبع چاپ)
+  const { data } = trpc.referrals.report.useQuery();
   const settings = trpc.referrals.settings.useQuery();
   const utils = trpc.useUtils();
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [copiedTg, setCopiedTg] = useState<number | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   const [ptsInput, setPtsInput] = useState("");
   const pts = settings.data?.points ?? 3;
   const penalty = settings.data?.leavePenalty ?? true;
-  const rows = data ?? [];
+  const rows = data?.referrals ?? [];
+  const noLinkStudents = data?.noLinkStudents ?? [];
   const totalJoins = rows.reduce((sum, r) => sum + r.joinCount, 0);
   const totalLeft = rows.reduce((sum, r) => sum + r.leaveCount, 0);
   const totalPoints = rows.reduce((sum, r) => sum + Math.max(0, r.joinCount - r.leaveCount), 0) * pts;
@@ -371,6 +444,7 @@ function ReferralsPanel() {
     onSuccess: d => {
       if (d.success) toast.success(d.revoked ? `لینک ${d.code} باطل و حذف شد` : `لینک ${d.code} حذف شد (ابطال تلگرام انجام نشد ولی دیگر امتیازی حساب نمی‌شود)`);
       else toast.error(d.message || "حذف ممکن نشد");
+      utils.referrals.report.invalidate();
       utils.referrals.list.invalidate();
     },
     onError: e => toast.error(e.message),
@@ -381,6 +455,39 @@ function ReferralsPanel() {
   const copyLink = async (row: { code: string; inviteLink: string }) => {
     try { await navigator.clipboard.writeText(row.inviteLink); setCopiedCode(row.code); setTimeout(() => setCopiedCode(null), 1500); }
     catch { toast.error("کپی خودکار ممکن نشد؛ لینک را دستی انتخاب و کپی کنید"); }
+  };
+  const copyTgId = async (id: number | null) => {
+    if (!id) return;
+    try { await navigator.clipboard.writeText(String(id)); setCopiedTg(id); setTimeout(() => setCopiedTg(null), 1500); }
+    catch { toast.error("کپی خودکار ممکن نشد؛ آیدی را دستی کپی کنید"); }
+  };
+  // تاریخ شمسی از timestamp (به وقت محلی مرورگر)
+  const jTs = (ts: number) => {
+    if (!Number.isFinite(ts) || ts <= 0) return "—";
+    const d = new Date(ts);
+    return formatJalaliShort(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+  };
+  const printReferralReport = () => {
+    if (rows.length === 0 && noLinkStudents.length === 0) { toast.error("چیزی برای چاپ وجود ندارد"); return; }
+    printHtmlInIframe(buildReferralPrintHtml({
+      schoolName,
+      printDate: formatJalali(new Date()),
+      pointsPerJoin: String(fmtPts(pts)),
+      leavePenalty: penalty,
+      rows: rows.map(r => ({
+        studentName: r.studentName,
+        className: r.className ?? "",
+        code: r.code,
+        telegramUserId: r.telegramUserId,
+        telegramUsername: r.telegramUsername,
+        createdAt: jTs(r.createdAt),
+        joinCount: r.joinCount,
+        leaveCount: r.leaveCount,
+        effectivePoints: String(fmtPts(Math.max(0, r.joinCount - r.leaveCount) * pts)),
+        joins: r.joins.map(j => ({ telegramUserId: j.telegramUserId, telegramName: j.telegramName, joinedAt: jTs(j.joinedAt), status: j.status })),
+      })),
+      noLinkStudents: noLinkStudents.map(s => ({ name: `${s.firstName} ${s.lastName}`, className: s.className ?? "" })),
+    }));
   };
   const savePoints = () => {
     const n = Number(normalizeNumStr(ptsInput));
@@ -396,11 +503,13 @@ function ReferralsPanel() {
               <CardTitle className="text-lg flex items-center gap-2"><Share2 className="h-5 w-5 text-[#0f766e]" /> دعوت‌ها (افیلیت تلگرام)</CardTitle>
               <p className="text-sm text-slate-500 mt-1">دانش‌آموز در بات تلگرام نام خود را می‌فرستد → لینک اختصاصی کانال می‌گیرد → هر عضو از طریق لینک = {pts} امتیاز برای او{penalty ? " و اگر عضو کانال را ترک کند، همان امتیاز کسر می‌شود" : ""} (به‌صورت خودکار در تابلو ثبت می‌شود).</p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="outline" className="border-slate-200 text-slate-600">{rows.length} لینک</Badge>
               <Badge variant="secondary" className="bg-[#e6f4f1] text-[#0f766e]">{totalJoins - totalLeft} دعوت موفق</Badge>
               {totalLeft > 0 && <Badge className="bg-red-100 text-red-700">{totalLeft} خروج</Badge>}
               <Badge className="bg-amber-100 text-amber-700">+{fmtPts(totalPoints)} امتیاز</Badge>
+              {noLinkStudents.length > 0 && <Badge variant="outline" className="border-slate-200 text-slate-500">{noLinkStudents.length} بدون لینک</Badge>}
+              <Button size="sm" variant="outline" onClick={printReferralReport} title="چاپ گزارش کامل دعوت‌ها با آیدی تلگرام و دعوت‌شدگان"><ClipboardList className="mr-2 h-4 w-4" /> چاپ گزارش</Button>
             </div>
           </div>
         </CardHeader>
@@ -426,11 +535,18 @@ function ReferralsPanel() {
               {rows.map(r => {
                 const effective = Math.max(0, r.joinCount - r.leaveCount);
                 return (
-                  <div key={r.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3">
-                    <div className="min-w-0">
-                      <p className="font-semibold">{r.studentName} <span className="text-xs text-slate-500">({r.className ?? "بدون کلاس"})</span></p>
-                      <p className="text-xs text-slate-500 truncate" dir="ltr">{r.inviteLink || `کد: ${r.code} — لینک هنوز ساخته نشده (بات تنظیم نشده؟)`}</p>
-                    </div>
+                  <div key={r.id} className="rounded-xl bg-slate-50 overflow-hidden">
+                    <div className="flex items-center justify-between gap-3 px-4 py-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold">{r.studentName} <span className="text-xs text-slate-500">({r.className ?? "بدون کلاس"})</span></p>
+                        <p className="text-xs text-slate-500 truncate" dir="ltr">{r.inviteLink || `کد: ${r.code} — لینک هنوز ساخته نشده (بات تنظیم نشده؟)`}</p>
+                        <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                          {r.telegramUserId ? (
+                            <button type="button" onClick={() => copyTgId(r.telegramUserId)} title="کپی آیدی تلگرام دانش‌آموز" className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-bold text-slate-700 transition-colors hover:border-[#0f766e] hover:text-[#0f766e]" dir="ltr"><Send className="h-3 w-3" /> {r.telegramUserId}{r.telegramUsername ? ` · @${r.telegramUsername}` : ""}{copiedTg === r.telegramUserId ? " ✓" : ""}</button>
+                          ) : <span className="text-[11px] text-slate-400">آیدی تلگرام ثبت نشده</span>}
+                          <button type="button" onClick={() => setExpandedId(expandedId === r.id ? null : r.id)} className="text-[11px] font-bold text-[#0f766e] hover:underline">{expandedId === r.id ? "بستن جزئیات" : `دعوت‌شدگان (${r.joins.length})`}</button>
+                        </div>
+                      </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <Badge variant="outline">{r.joinCount} دعوت</Badge>
                       {r.leaveCount > 0 && <Badge className="bg-red-100 text-red-700">{r.leaveCount} خروج</Badge>}
@@ -438,6 +554,23 @@ function ReferralsPanel() {
                       {r.inviteLink && <Button size="sm" variant="outline" onClick={() => copyLink(r)}>{copiedCode === r.code ? "کپی شد" : "کپی لینک"}</Button>}
                       <button type="button" title="حذف لینک دعوت" aria-label={`حذف لینک دعوت ${r.studentName}`} disabled={deleteReferral.isPending} onClick={() => confirmDeleteReferral(r)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-red-200 bg-red-50 text-red-600 transition-colors hover:bg-red-600 hover:text-white disabled:opacity-50"><X className="h-4 w-4" /></button>
                     </div>
+                    </div>
+                    {expandedId === r.id && (
+                      <div className="border-t border-slate-200 bg-white px-4 py-3 space-y-2">
+                        {r.joins.length === 0 ? <p className="text-xs text-slate-400">هنوز کسی با این لینک عضو نشده است</p> : r.joins.map((j, i) => (
+                          <div key={`${j.telegramUserId}-${i}`} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold truncate">{j.telegramName || "کاربر تلگرام"}</p>
+                              <p className="text-[11px] text-slate-500" dir="ltr">ID: {j.telegramUserId}</p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[11px] text-slate-500">{jTs(j.joinedAt)}</span>
+                              {j.status === "left" ? <Badge className="bg-red-100 text-red-700">خارج شده</Badge> : <Badge className="bg-emerald-100 text-emerald-700">عضو فعال</Badge>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}

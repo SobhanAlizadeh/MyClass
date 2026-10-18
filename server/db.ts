@@ -494,6 +494,48 @@ export async function listReferrals(): Promise<ReferralStatRow[]> {
   return rows.map((row: any) => ({ id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link ?? ""), createdAt: Number(row.created_at ?? 0), joinCount: Number(row.join_count ?? 0), leaveCount: Number(row.leave_count ?? 0) }));
 }
 
+// گزارش کامل افیلیت برای پنل ادمین (نمایش + چاپ):
+// هر لینک دعوت با آیدی تلگرام صاحبش + لیست دعوت‌شدگان هر لینک + دانش‌آموزانی که هنوز لینک نساخته‌اند
+export type ReferralReportJoin = { telegramUserId: number; telegramName: string | null; joinedAt: number; status: string };
+export type ReferralReportRow = ReferralStatRow & { telegramUserId: number | null; telegramUsername: string | null; telegramChatId: number | null; joins: ReferralReportJoin[] };
+export type ReferralNoLinkStudent = { id: number; firstName: string; lastName: string; className: string | null };
+export async function getReferralReport(): Promise<{ referrals: ReferralReportRow[]; noLinkStudents: ReferralNoLinkStudent[]; generatedAt: number }> {
+  const conn = getRawConn();
+  if (!conn) return { referrals: [], noLinkStudents: [], generatedAt: Date.now() };
+  await ensureReferralTables(conn);
+  const res: any = await conn.execute(
+    "SELECT r.id, r.student_id, r.code, r.invite_link, r.telegram_user_id, r.telegram_username, r.telegram_chat_id, r.created_at, s.firstName, s.lastName, c.name AS class_name, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id) AS join_count, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id AND j.status = 'left') AS leave_count FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId ORDER BY join_count DESC, r.id ASC"
+  );
+  const jres: any = await conn.execute("SELECT referral_id, telegram_user_id, telegram_name, joined_at, status FROM referral_joins ORDER BY joined_at ASC, id ASC");
+  const joinsByRef = new Map<number, ReferralReportJoin[]>();
+  for (const j of ((Array.isArray(jres) ? jres : jres.rows) ?? [])) {
+    const rid = Number(j.referral_id);
+    const list = joinsByRef.get(rid) ?? [];
+    list.push({ telegramUserId: Number(j.telegram_user_id), telegramName: j.telegram_name != null ? String(j.telegram_name) : null, joinedAt: Number(j.joined_at ?? 0), status: String(j.status ?? "active") });
+    joinsByRef.set(rid, list);
+  }
+  const referrals = ((Array.isArray(res) ? res : res.rows) ?? []).map((row: any): ReferralReportRow => ({
+    id: Number(row.id),
+    studentId: Number(row.student_id),
+    studentName: `${row.firstName} ${row.lastName}`,
+    className: row.class_name ?? null,
+    code: String(row.code),
+    inviteLink: String(row.invite_link ?? ""),
+    createdAt: Number(row.created_at ?? 0),
+    joinCount: Number(row.join_count ?? 0),
+    leaveCount: Number(row.leave_count ?? 0),
+    telegramUserId: row.telegram_user_id != null ? Number(row.telegram_user_id) : null,
+    telegramUsername: row.telegram_username != null ? String(row.telegram_username) : null,
+    telegramChatId: row.telegram_chat_id != null ? Number(row.telegram_chat_id) : null,
+    joins: joinsByRef.get(Number(row.id)) ?? [],
+  }));
+  const nres: any = await conn.execute(
+    "SELECT s.id, s.firstName, s.lastName, c.name AS class_name FROM students s LEFT JOIN referrals r ON r.student_id = s.id LEFT JOIN classes c ON c.id = s.classId WHERE r.id IS NULL ORDER BY c.name ASC, s.firstName ASC, s.lastName ASC LIMIT 500"
+  );
+  const noLinkStudents = ((Array.isArray(nres) ? nres : nres.rows) ?? []).map((row: any) => ({ id: Number(row.id), firstName: String(row.firstName), lastName: String(row.lastName), className: row.class_name ?? null }));
+  return { referrals, noLinkStudents, generatedAt: Date.now() };
+}
+
 // حذف کامل یک معرف توسط ادمین (دکمه ضربدر قرمز پنل): ردیف referral و شمارنده‌های join آن پاک می‌شود.
 // خروجی برای ابطال لینک در سمت تلگرام استفاده می‌شود؛ فعالیت‌ها و امتیازهای قبلاً گرفته‌شده دست‌نخورده می‌مانند.
 export async function deleteReferral(id: number): Promise<{ code: string; inviteLink: string; studentId: number } | null> {
