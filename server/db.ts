@@ -507,3 +507,60 @@ export async function deleteReferral(id: number): Promise<{ code: string; invite
   await conn.execute("DELETE FROM referrals WHERE id = ?", [id]);
   return { code: String(row.code), inviteLink: String(row.invite_link ?? ""), studentId: Number(row.student_id) };
 }
+
+// --- گروه‌های بات + دفتر پیام خصوصی افیلیت -----------------------------------
+// وقتی بات به گروه/کانالی اضافه می‌شود، Telegram اجازه LIST گرفتن اعضا را نمی‌دهد؛
+// اعضا را از رویدادهای chat_member و پیام‌های گروه یاد می‌گیریم و به هر کسی که
+// هنوز لینک افیلیت نساخته یک‌بار پیام خصوصی (مزایا + آموزش) می‌زنیم.
+// وضعیت‌ها: pending (دیده شد) / sent (پیام رفت) / unreachable (ربات اجازه DM ندارد — بعد از /start دوباره تلاش می‌شود) / has_link
+let _botGroupTablesReady: Promise<unknown> | null = null;
+function ensureBotGroupTables(conn: ReturnType<typeof connect>) {
+  if (!_botGroupTablesReady) _botGroupTablesReady = (async () => {
+    await conn.execute("CREATE TABLE IF NOT EXISTS bot_groups (chat_id BIGINT PRIMARY KEY, chat_type VARCHAR(16) NOT NULL DEFAULT 'group', title VARCHAR(255) NULL, active TINYINT NOT NULL DEFAULT 1, added_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)");
+    await conn.execute("CREATE TABLE IF NOT EXISTS affiliate_prompts (telegram_user_id BIGINT PRIMARY KEY, status VARCHAR(16) NOT NULL DEFAULT 'pending', source_chat_id BIGINT NULL, source_title VARCHAR(255) NULL, attempts INT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL)");
+  })().catch(e => { _botGroupTablesReady = null; throw e; });
+  return _botGroupTablesReady;
+}
+
+export async function upsertBotGroup(chatId: number, chatType: string, title: string | null, active: boolean): Promise<void> {
+  const conn = getRawConn();
+  if (!conn) return;
+  await ensureBotGroupTables(conn);
+  const now = Date.now();
+  await conn.execute(
+    "INSERT INTO bot_groups (chat_id, chat_type, title, active, added_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE chat_type = VALUES(chat_type), title = VALUES(title), active = VALUES(active), updated_at = VALUES(updated_at)",
+    [chatId, chatType, title, active ? 1 : 0, now, now]
+  );
+}
+
+// آیا این اکانت تلگرام قبلاً لینک افیلیت ساخته؟
+export async function hasTelegramReferral(tgUserId: number): Promise<boolean> {
+  const conn = getRawConn();
+  if (!conn) return false;
+  await ensureReferralTables(conn);
+  const res: any = await conn.execute("SELECT id FROM referrals WHERE telegram_user_id = ? LIMIT 1", [tgUserId]);
+  return ((Array.isArray(res) ? res : res.rows)?.length ?? 0) > 0;
+}
+
+// فقط وقتی پیام خصوصی بده: هرگز تلاش نشده، یا آخرین تلاش ناموفق بیش از ۲۴ ساعت قبل بوده
+export async function canPromptTelegramUser(tgUserId: number): Promise<boolean> {
+  const conn = getRawConn();
+  if (!conn) return false;
+  await ensureBotGroupTables(conn);
+  const res: any = await conn.execute("SELECT status, updated_at FROM affiliate_prompts WHERE telegram_user_id = ? LIMIT 1", [tgUserId]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  if (!row) return true;
+  if (row.status === "unreachable" && Date.now() - Number(row.updated_at ?? 0) > 24 * 3600 * 1000) return true;
+  return false;
+}
+
+export async function markTelegramPrompt(tgUserId: number, status: string, sourceChatId: number | null, sourceTitle: string | null): Promise<void> {
+  const conn = getRawConn();
+  if (!conn) return;
+  await ensureBotGroupTables(conn);
+  const now = Date.now();
+  await conn.execute(
+    "INSERT INTO affiliate_prompts (telegram_user_id, status, source_chat_id, source_title, attempts, updated_at) VALUES (?, ?, ?, ?, 1, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), source_chat_id = VALUES(source_chat_id), source_title = VALUES(source_title), attempts = attempts + 1, updated_at = VALUES(updated_at)",
+    [tgUserId, status, sourceChatId, sourceTitle, now]
+  );
+}

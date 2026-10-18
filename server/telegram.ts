@@ -33,6 +33,10 @@ import {
   claimReferralLeave,
   getReferralSettings,
   setReferralInviteLink,
+  upsertBotGroup,
+  hasTelegramReferral,
+  canPromptTelegramUser,
+  markTelegramPrompt,
   REFERRAL_POINTS,
   saveActivity,
 } from "./db";
@@ -82,6 +86,86 @@ function displayName(u: any): string {
   return name || (u?.username ? `@${u.username}` : "کاربر");
 }
 
+// ---------- معرفی افیلیت در گروه‌ها/کانال‌ها ----------
+// محدودیت Telegram: بات نمی‌تواند لیست اعضای گروه را بگیرد و به کسی که ربات را
+// استارت نکرده نمی‌تواند پیام خصوصی بدهد (403). راه‌حل: اعضا را از chat_member
+// و پیام‌های گروه یاد می‌گیریم و به هر کسی که لینک نساخته یک‌بار پیام خصوصی می‌زنیم؛
+// به کسانی که هنوز استارت نکرده‌اند، به‌محض اولین /start یا پیام دوباره تلاش می‌شود.
+const AFFILIATE_CHANNEL_NAME = "تک راه (@takrahTop)";
+let _botUsername: string | null = null;
+async function botUsername(): Promise<string> {
+  if (_botUsername) return _botUsername;
+  try { const me = await tg("getMe", {}); if (me?.ok && me.result?.username) _botUsername = `@${me.result.username}`; } catch { /* fallback below */ }
+  return _botUsername ?? "@TakrahAffilateBot";
+}
+function isGroupLike(chat: any): boolean { const t = String(chat?.type ?? ""); return t === "group" || t === "supergroup"; }
+function isAffiliateChat(chatId: number, chat: any): boolean {
+  const cfg = channelId();
+  if (cfg.startsWith("@")) return String(chat?.username ?? "").toLowerCase() === cfg.slice(1).toLowerCase();
+  return chatId === Number(cfg);
+}
+
+// پیام خصوصی به عضوی که هنوز لینک افیلیت نساخته: مزایا + آموزش گام‌به‌گام
+async function sendAffiliatePitch(user: any, sourceChatId: number | null, sourceTitle: string | null, sourceKind: "group" | "channel"): Promise<void> {
+  const tgUserId = Number(user?.id);
+  if (!Number.isFinite(tgUserId) || tgUserId <= 0 || user?.is_bot) return;
+  try {
+    if (await hasTelegramReferral(tgUserId)) { await markTelegramPrompt(tgUserId, "has_link", sourceChatId, sourceTitle); return; }
+    if (!(await canPromptTelegramUser(tgUserId))) return; // قبلاً پیام رفته یا تلاش اخیر ناموفق بوده
+    const pts = await referralPoints();
+    const uname = await botUsername();
+    const where = sourceTitle ? `${sourceKind === "group" ? "گروه" : "کانال"} «${sourceTitle}»` : sourceKind === "channel" ? "کانال" : "گروه";
+    const res = await sendMessage(tgUserId, [
+      `سلام ${displayName(user)} 👋`,
+      "",
+      `دیدم که در ${where} هستی، ولی هنوز لینک دعوت اختصاصی نساختی.`,
+      "",
+      "🎁 مزایای لینک افیلیت:",
+      `• هر کس با لینک شما عضو کانال ${AFFILIATE_CHANNEL_NAME} شود، ${pts} امتیاز می‌گیرید`,
+      "• امتیازها به‌صورت خودکار در تابلوی دفترکلاس ثبت می‌شود",
+      "• هرچقدر بیشتر دعوت کنید، امتیازتان بیشتر می‌شود",
+      "",
+      "📚 ساخت لینک فقط ۳۰ ثانیه طول می‌کشد:",
+      `۱) روی من (${uname}) بزنید و دکمه Start را بزنید`,
+      "۲) نام و نام خانوادگی خود را دقیقاً مطابق سایت دفترکلاس بفرستید",
+      "۳) لینک اختصاصی‌تان را می‌گیرید؛ آن را برای دوستانتان بفرستید",
+      "",
+      "همین حالا /start را بفرستید تا لینک‌تان ساخته شود! 🚀",
+    ].join("\n"));
+    await markTelegramPrompt(tgUserId, res?.ok ? "sent" : "unreachable", sourceChatId, sourceTitle);
+  } catch (e) {
+    console.error("[telegram] affiliate pitch failed:", e);
+  }
+}
+
+// بات به گروه/کانال اضافه (یا از آن حذف) شد
+async function handleMyChatMember(mm: any): Promise<void> {
+  const chat = mm?.chat;
+  const chatId = Number(chat?.id);
+  if (!chat || !Number.isFinite(chatId)) return;
+  const oldStatus = String(mm?.old_chat_member?.status ?? "");
+  const newStatus = String(mm?.new_chat_member?.status ?? "");
+  const active = newStatus === "member" || newStatus === "administrator";
+  try { await upsertBotGroup(chatId, String(chat.type ?? "group"), chat.title ?? null, active); } catch (e) { console.error("[telegram] bot_groups upsert failed:", e); }
+  if (!active) return; // حذف/خروج ربات — فقط در دیتابیس غیرفعال می‌شود
+  if (isAffiliateChat(chatId, chat)) return; // کانال اصلی افیلیت — اعلام لازم ندارد
+  if (!(oldStatus === "left" || oldStatus === "kicked")) return; // فقط اضافه‌شدن تازه اعلام شود
+  const pts = await referralPoints();
+  const uname = await botUsername();
+  await sendMessage(chatId, [
+    "سلام! 👋 ربات افیلیت «تک راه» به این‌جا اضافه شد.",
+    "",
+    `🎁 هر کس لینک دعوت اختصاصی بسازد و دوستانش با آن عضو کانال ${AFFILIATE_CHANNEL_NAME} شوند، ${pts} امتیاز می‌گیرد.`,
+    "",
+    "📚 ساخت لینک (فقط ۳۰ ثانیه):",
+    `۱) در پیام خصوصی روی من (${uname}) بزنید و Start را بزنید`,
+    "۲) نام و نام خانوادگی خود را دقیقاً مطابق سایت دفترکلاس بفرستید",
+    "۳) لینک اختصاصی را می‌گیرید و برای دوستانتان می‌فرستید",
+    "",
+    "به اعضایی که هنوز لینک ندارند، در پیام خصوصی یادآوری می‌کنم. ✅",
+  ].join("\n"));
+}
+
 function candidateKeyboard(candidates: { id: number; firstName: string; lastName: string; className: string | null }[]) {
   return {
     inline_keyboard: candidates.map(c => [{
@@ -129,14 +213,38 @@ async function sendReferralLink(chatId: number, studentId: number, tgUser: any):
     "",
     `کد شما: ${ref.code}`,
   ].join("\n"));
+  // این اکانت حالا لینک دارد — دیگر پیام معرفی افیلیت برایش نمی‌رود
+  if (Number(tgUser?.id) > 0) await markTelegramPrompt(Number(tgUser.id), "has_link", chatId, null).catch(() => {});
 }
 
 // ---------- update handlers ----------
 async function handleMessage(msg: any): Promise<void> {
-  const chatId = msg?.chat?.id;
+  const chat = msg?.chat;
+  const chatId = chat?.id;
   const from = msg?.from;
-  if (!chatId || !from) return;
+  if (!chatId || !from || from.is_bot) return;
   const text: string = String(msg?.text ?? "").trim();
+  const chatType = String(chat?.type ?? "private");
+
+  // در گروه/سوپرگروه: جریان «نام» فقط مخصوص پیام خصوصی است (وگرنه ربات به هر
+  // پیام معمولی گروه جواب نام‌یابی می‌داد!). این‌جا فقط اعضا را برای پیچ افیلیت
+  // ردیابی می‌کنیم و به /start پاسخ کوتاه آموزشی می‌دهیم.
+  if (isGroupLike(chat)) {
+    void upsertBotGroup(chatId, chatType, chat?.title ?? null, true).catch(() => {});
+    await sendAffiliatePitch(from, chatId, chat?.title ?? null, "group");
+    if (text.startsWith("/start") || text.startsWith("/link") || text.startsWith("/mylink")) {
+      const pts = await referralPoints();
+      const uname = await botUsername();
+      await sendMessage(chatId, [
+        "برای ساخت لینک دعوت اختصاصی:",
+        `۱) در پیام خصوصی به من (${uname}) دکمه Start را بزنید`,
+        "۲) نام و نام خانوادگی خود را مطابق سایت دفترکلاس بفرستید",
+        `۳) هر عضو از طریق لینک شما = ${pts} امتیاز`,
+      ].join("\n"));
+    }
+    return;
+  }
+  if (chatType !== "private") return;
 
   if (text.startsWith("/start") || text.startsWith("/link") || text.startsWith("/mylink")) {
     const existing = await getLatestReferralByTelegramUser(from.id);
@@ -199,17 +307,33 @@ async function handleCallbackQuery(cq: any): Promise<void> {
 }
 
 async function handleChatMemberUpdate(cu: any): Promise<void> {
+  const chat = cu?.chat;
+  const chatId = Number(chat?.id);
   const oldMember = cu?.old_chat_member;
   const newMember = cu?.new_chat_member;
   const user = newMember?.user ?? oldMember?.user;
-  if (!user || user.is_bot) return;
+  if (!chat || !Number.isFinite(chatId) || !user || user.is_bot) return;
   const oldStatus = String(oldMember?.status ?? "");
   const newStatus = String(newMember?.status ?? "");
 
+  // گروه/کانال دیگری که بات در آن عضو است: ورود عضو → پیام خصوصی معرفی افیلیت
+  if (!isAffiliateChat(chatId, chat)) {
+    if ((newStatus === "member" || newStatus === "administrator") && (oldStatus === "left" || oldStatus === "kicked")) {
+      await sendAffiliatePitch(user, chatId, chat?.title ?? null, String(chat?.type ?? "") === "channel" ? "channel" : "group");
+    }
+    return;
+  }
+
+  // --- از این‌جا به بعد: کانال اصلی افیلیت (منطق امتیاز) ---
   // عضویت جدید در کانال → امتیاز به دعوت‌کننده
   if (newStatus === "member") {
     const inviteLink = cu?.invite_link;
-    if (!inviteLink?.invite_link) return; // عضویت با لینک عمومی کانال — بدون امتیاز
+    if (!inviteLink?.invite_link) {
+      // عضویت با لینک عمومی کانال — امتیازی ندارد، ولی چون هنوز لینک اختصاصی
+      // نساخته، در پیام خصوصی مزایا و روش ساخت لینک برایش فرستاده می‌شود
+      await sendAffiliatePitch(user, chatId, chat?.title ?? null, "channel");
+      return;
+    }
 
     const link: string = String(inviteLink.invite_link);
     let ref = await getReferralByInviteLink(link);
@@ -296,6 +420,7 @@ export async function handleTelegramWebhook(req: Request): Promise<Response> {
     if (update?.message) await handleMessage(update.message);
     else if (update?.callback_query) await handleCallbackQuery(update.callback_query);
     else if (update?.chat_member) await handleChatMemberUpdate(update.chat_member);
+    else if (update?.my_chat_member) await handleMyChatMember(update.my_chat_member);
   } catch (e) {
     console.error("[telegram] update processing error:", e);
   }
