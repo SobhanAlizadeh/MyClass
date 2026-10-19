@@ -1,5 +1,7 @@
-// Setup DEV database (classroom_v2) on the same TiDB cluster:
-// 1. CREATE DATABASE classroom_v2  2. run drizzle migrations  3. run v2 migration  4. seed demo tenant
+// Setup a v2 database on the same TiDB cluster:
+// 1. CREATE DATABASE <name>  2. run drizzle migrations  3. run v2 migration  4. seed demo tenant (only if empty)
+// Usage: node scripts/setup-dev-db.mjs [dbName]   (default: classroom_v2)
+const DB_NAME = process.argv[2] ?? "classroom_v2";
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 
@@ -9,7 +11,7 @@ const env = Object.fromEntries(
 );
 const PROD_URL = env.DATABASE_URL;
 if (!PROD_URL) throw new Error("DATABASE_URL missing");
-const DEV_URL = PROD_URL.replace(/\/[a-z_0-9]+\?/i, "/classroom_v2?");
+const DEV_URL = PROD_URL.replace(/\/[a-z_0-9]+\?/i, `/${DB_NAME}?`);
 console.log("dev url:", DEV_URL.replace(/:([^@]+)@/, ":***@"));
 
 const { connect } = await import("@tidbcloud/serverless");
@@ -17,8 +19,8 @@ const admin = connect({ url: PROD_URL });
 const q = async (sql, params) => { const r = await admin.execute(sql, params); return Array.isArray(r) ? r : (r.rows ?? []); };
 
 // 1) create dev database
-await q("CREATE DATABASE IF NOT EXISTS classroom_v2");
-console.log("✓ database classroom_v2 ready");
+await q(`CREATE DATABASE IF NOT EXISTS ${DB_NAME}`);
+console.log(`✓ database ${DB_NAME} ready`);
 
 // 2) apply drizzle migration SQL files in order (each statement separately)
 import { readdirSync } from "node:fs";
