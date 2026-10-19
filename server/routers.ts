@@ -11,7 +11,7 @@ import {
   authenticateSchoolUser, computeSchoolRuntime, superOpenId, schoolUserOpenId, isSuperAdmin,
   listSchoolsWithStats, createTenantSchool, updateTenantSchool, deleteTenantSchool,
   listSchoolUsers, createSchoolUser, setUserPassword, toggleUserActive, deleteUserById, superStats,
-  getDefaultPublicSchool, assertTenantOwned,
+  getDefaultPublicSchool, assertTenantOwned, getSchoolUserOwned, countActiveManagers,
 } from "./db-v2";
 import { revokeTelegramInviteLink } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -157,14 +157,41 @@ export const appRouter = router({
   superadmin: router({
     stats: superAdminProcedure.query(() => superStats()),
     schools: superAdminProcedure.query(() => listSchoolsWithStats()),
-    createSchool: superAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().optional(), phone: z.string().optional(), months: z.number().min(1).max(36), note: z.string().optional() })).mutation(({ input }) => createTenantSchool(input)),
+    // ساخت مدرسه + تعیین ادمین مدرسه در یک گام — سوپرادمین فقط همین یک حساب را می‌سازد؛
+    // معلم/تنظیمگر بعداً داخل پنل مدرسه توسط مدیر یا تنظیمگر ساخته می‌شوند
+    createSchool: superAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().optional(), phone: z.string().optional(), months: z.number().min(1).max(36), note: z.string().optional(), adminUsername: z.string().optional(), adminPassword: z.string().optional() })).mutation(({ input }) => createTenantSchool(input)),
     updateSchool: superAdminProcedure.input(z.object({ id: z.number(), name: z.string().optional(), phone: z.string().nullable().optional(), status: z.enum(["active", "pending", "suspended"]).optional(), extendMonths: z.number().min(1).max(36).optional(), setSubscriptionEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), note: z.string().nullable().optional() })).mutation(({ input }) => updateTenantSchool(input)),
     deleteSchool: superAdminProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteTenantSchool(input.id)),
     users: superAdminProcedure.input(z.object({ schoolId: z.number() })).query(({ input }) => listSchoolUsers(input.schoolId)),
-    createUser: superAdminProcedure.input(z.object({ schoolId: z.number(), username: z.string().min(3), password: z.string().min(6), displayName: z.string().optional(), platformRole: z.enum(["manager", "scheduler", "teacher"]) })).mutation(({ input }) => createSchoolUser(input)),
+    // سوپرادمین فقط ادمین (مدیر) مدرسه را تعیین می‌کند — نقش‌های دیگر از پنل خود مدرسه ساخته می‌شوند
+    createUser: superAdminProcedure.input(z.object({ schoolId: z.number(), username: z.string().min(3), password: z.string().min(6), displayName: z.string().optional(), platformRole: z.literal("manager") })).mutation(({ input }) => createSchoolUser(input)),
     setPassword: superAdminProcedure.input(z.object({ userId: z.number(), password: z.string().min(6) })).mutation(({ input }) => setUserPassword(input.userId, input.password)),
     toggleUser: superAdminProcedure.input(z.object({ userId: z.number(), active: z.boolean() })).mutation(({ input }) => toggleUserActive(input.userId, input.active)),
     deleteUser: superAdminProcedure.input(z.object({ userId: z.number() })).mutation(({ input }) => deleteUserById(input.userId)),
+  }),
+  // مدیریت کاربران مدرسه از داخل پنل مدرسه — مدیر و تنظیمگر می‌توانند معلم و مدیر/تنظیمگر بسازند
+  schoolUsers: router({
+    list: schedulerProcedure.query(({ ctx }) => listSchoolUsers(ctx.schoolId!)),
+    add: schedulerProcedure.input(z.object({ username: z.string().min(3), password: z.string().min(6), displayName: z.string().optional(), platformRole: z.enum(["manager", "scheduler", "teacher"]) })).mutation(({ ctx, input }) => createSchoolUser({ ...input, schoolId: ctx.schoolId! })),
+    setPassword: schedulerProcedure.input(z.object({ userId: z.number(), password: z.string().min(6) })).mutation(async ({ ctx, input }) => {
+      await getSchoolUserOwned(input.userId, ctx.schoolId!, (ctx.user!.platformRole ?? "") as string);
+      await setUserPassword(input.userId, input.password);
+      return { ok: true as const };
+    }),
+    toggle: schedulerProcedure.input(z.object({ userId: z.number(), active: z.boolean() })).mutation(async ({ ctx, input }) => {
+      const target = await getSchoolUserOwned(input.userId, ctx.schoolId!, (ctx.user!.platformRole ?? "") as string);
+      if (target.id === ctx.user!.id) throw new TRPCError({ code: "FORBIDDEN", message: "نمی‌توانید حساب خودتان را تغییر وضعیت دهید" });
+      if (!input.active && target.platformRole === "manager" && (await countActiveManagers(ctx.schoolId!, target.id)) === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "حداقل یک مدیر فعال باید در مدرسه باقی بماند" });
+      await toggleUserActive(input.userId, input.active);
+      return { ok: true as const };
+    }),
+    remove: schedulerProcedure.input(z.object({ userId: z.number() })).mutation(async ({ ctx, input }) => {
+      const target = await getSchoolUserOwned(input.userId, ctx.schoolId!, (ctx.user!.platformRole ?? "") as string);
+      if (target.id === ctx.user!.id) throw new TRPCError({ code: "FORBIDDEN", message: "نمی‌توانید حساب خودتان را حذف کنید" });
+      if (target.platformRole === "manager" && target.active === 1 && (await countActiveManagers(ctx.schoolId!, target.id)) === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "حداقل یک مدیر فعال باید در مدرسه باقی بماند" });
+      await deleteUserById(input.userId);
+      return { ok: true as const };
+    }),
   }),
 });
 export type AppRouter = typeof appRouter;

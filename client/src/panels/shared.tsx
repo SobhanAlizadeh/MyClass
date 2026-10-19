@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { CalendarDays, Plus, X } from "lucide-react";
+import { CalendarDays, Plus, Search, X } from "lucide-react";
 import { formatJalaliShort, jalaliDaysInMonth, jalaliToGregorian, monthNames, toJalaliParts } from "@/lib/jalali";
 
 export const today = new Date().toISOString().slice(0, 10);
@@ -33,3 +33,29 @@ export function TeamSelect({ value, onChange, teams }: any) { return <Select val
 export function QuickButton({ active, disabled, color, label, onClick }: any) { const map: any = { green: active ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700", amber: active ? "bg-amber-500 text-white" : "bg-amber-50 text-amber-700", red: active ? "bg-red-500 text-white" : "bg-red-50 text-red-600" }; return <button disabled={disabled} onClick={onClick} className={`text-[11px] font-bold rounded-lg px-2 py-1.5 transition-colors ${map[color]} ${disabled ? "opacity-50 cursor-not-allowed" : "hover:opacity-80"}`}>{label}</button>; }
 export function Empty({ text }: { text: string }) { return <div className="p-8 text-center text-sm text-slate-400"><X className="h-5 w-5 mx-auto mb-2 opacity-50" />{text}</div>; }
 export function ManageForm({ title, value, setValue, placeholder, onClick, button }: any) { return <div className="space-y-2"><p className="font-bold text-sm">{title}</p><Input value={value} onChange={e => setValue(e.target.value)} placeholder={placeholder} /><Button onClick={onClick} variant="outline" className="w-full">{button} <Plus className="mr-2 h-4 w-4" /></Button></div>; }
+
+// جست‌وجوی ساده برای همه جدول‌ها — با آیکون و پاک‌کردن سریع
+export function SearchInput({ value, onChange, placeholder = "جست‌وجو…" }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return <div className="relative w-full sm:w-64"><Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" /><Input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} className="pr-9 h-9 text-sm bg-white" />{value && <button type="button" onClick={() => onChange("")} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title="پاک‌کردن"><X className="h-3.5 w-3.5" /></button>}</div>;
+}
+
+// فیلتر متنی عمومی: نام/نام خانوادگی/کلاس/هر رشته‌ای که در row هست
+export const matchesQuery = (q: string, ...fields: Array<string | number | null | undefined>) => {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  return fields.some(f => String(f ?? "").toLowerCase().includes(needle));
+};
+
+// اگر یک پنل خطای ران‌تایم بدهد، به‌جای سفیدشدن کل صفحه فقط همان پنل پیام می‌دهد
+import { Component, type ReactNode } from "react";
+type PanelErrorBoundaryProps = { name: string; children: ReactNode };
+type PanelErrorBoundaryState = { error: Error | null };
+export class PanelErrorBoundary extends Component<PanelErrorBoundaryProps, PanelErrorBoundaryState> {
+  constructor(props: PanelErrorBoundaryProps) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error: Error): PanelErrorBoundaryState { return { error }; }
+  componentDidUpdate(prev: PanelErrorBoundaryProps) { if (prev.name !== this.props.name && this.state.error) this.setState({ error: null }); }
+  render() {
+    if (this.state.error) return <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center"><p className="font-bold text-red-700">این بخش موقتاً با خطا مواجه شد</p><p className="text-xs text-red-500 mt-1" dir="ltr">{String(this.state.error.message).slice(0, 140)}</p><Button variant="outline" className="mt-3" onClick={() => this.setState({ error: null })}>تلاش دوباره</Button></div>;
+    return this.props.children;
+  }
+}

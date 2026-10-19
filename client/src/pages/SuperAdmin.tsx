@@ -10,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Lock, LogOut, Plus, RefreshCw, School, ShieldCheck, Trash2, KeyRound, UserPlus } from "lucide-react";
+import { Lock, LogOut, Plus, RefreshCw, School, ShieldCheck, Trash2, KeyRound, Search, UserPlus, UserCog } from "lucide-react";
+import { SearchInput, matchesQuery } from "@/panels/shared";
 
 type SchoolRow = {
   id: number; name: string; code: string | null; status: string; phone: string | null;
@@ -60,12 +61,12 @@ export default function SuperAdmin() {
   const stats = trpc.superadmin.stats.useQuery(undefined, { enabled: Boolean(me && (me as any).platformRole === "super_admin") });
   const users = trpc.superadmin.users.useQuery({ schoolId: selected ?? 0 }, { enabled: selected != null });
 
-  const [name, setName] = useState(""); const [code, setCode] = useState(""); const [phone, setPhone] = useState(""); const [months, setMonths] = useState("1");
+  const [name, setName] = useState(""); const [code, setCode] = useState(""); const [phone, setPhone] = useState(""); const [months, setMonths] = useState("1"); const [adminUser, setAdminUser] = useState(""); const [adminPass, setAdminPass] = useState(""); const [schoolQ, setSchoolQ] = useState(""); const [userQ, setUserQ] = useState("");
   const [nu, setNu] = useState({ username: "", password: "", displayName: "", platformRole: "manager" as "manager" | "scheduler" | "teacher" });
   const [pwUser, setPwUser] = useState<{ id: number; username: string } | null>(null); const [newPw, setNewPw] = useState("");
 
   const ok = (msg: string) => { toast.success(msg); void utils.superadmin.schools.invalidate(); void utils.superadmin.stats.invalidate(); void utils.superadmin.users.invalidate(); };
-  const createSchool = trpc.superadmin.createSchool.useMutation({ onSuccess: d => { ok("مدرسه ساخته شد — کد: " + (d as any).code); setName(""); setCode(""); setPhone(""); } });
+  const createSchool = trpc.superadmin.createSchool.useMutation({ onSuccess: d => { const admin = (d as any).admin; ok(`مدرسه «${(d as any).name}» ساخته شد — کد ورود: ${(d as any).code}${admin ? ` · ادمین: ${admin.username}` : ""}`); setName(""); setCode(""); setPhone(""); setAdminUser(""); setAdminPass(""); } });
   const updateSchool = trpc.superadmin.updateSchool.useMutation({ onSuccess: () => ok("ذخیره شد") });
   const deleteSchool = trpc.superadmin.deleteSchool.useMutation({ onSuccess: () => { ok("مدرسه حذف شد"); setSelected(null); } });
   const createUser = trpc.superadmin.createUser.useMutation({ onSuccess: () => { ok("کاربر ساخته شد"); setNu({ username: "", password: "", displayName: "", platformRole: "manager" }); } });
@@ -80,23 +81,27 @@ export default function SuperAdmin() {
   const list = (schools.data ?? []) as SchoolRow[];
   const current = list.find(s => s.id === selected) ?? null;
   const st = stats.data;
+  const schoolRows = list.filter(s => matchesQuery(schoolQ, s.name, s.code));
+  const userRows = (users.data ?? []).filter((u: any) => matchesQuery(userQ, u.username, u.displayName));
 
   return <div dir="rtl" className="min-h-screen bg-slate-950 text-slate-100">
     <header className="border-b border-slate-800 bg-slate-900/70 text-slate-100 backdrop-blur sticky top-0 z-20"><div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between"><div className="flex items-center gap-3"><div className="h-10 w-10 rounded-xl bg-white text-slate-900 grid place-items-center"><ShieldCheck className="h-5 w-5" /></div><div><p className="font-black">پنل سوپرادمین دفترکلاس</p><p className="text-xs text-slate-400">ساخت مدرسه فقط از همین‌جا — بعد از پرداخت</p></div></div><div className="flex items-center gap-2"><Button variant="outline" size="sm" className="border-slate-700 text-slate-200" onClick={() => { void utils.superadmin.schools.invalidate(); void utils.superadmin.stats.invalidate(); }}><RefreshCw className="h-4 w-4" /></Button><Button variant="outline" size="sm" className="border-slate-700 text-slate-200" onClick={() => logout.mutate()}><LogOut className="h-4 w-4" /> خروج</Button></div></div></header>
     <main className="max-w-6xl mx-auto p-6 space-y-6">
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">{[["مدرسه‌ها", st?.totalSchools], ["فعال", st?.activeSchools], ["رو به انقضا", st?.expiringSoon], ["دانش‌آموزان", st?.totalStudents], ["کاربران", st?.totalUsers]].map(([k, v]: any) => <Card key={k} className="border-slate-800 bg-slate-900 text-slate-100"><CardContent className="p-4 text-center"><p className="text-xs text-slate-400">{k}</p><p className="text-2xl font-black mt-1">{v ?? "—"}</p></CardContent></Card>)}</div>
 
-      <Card className="border-slate-800 bg-slate-900 text-slate-100"><CardHeader><CardTitle className="text-white text-lg flex items-center gap-2"><Plus className="h-5 w-5" /> مدرسه جدید (بعد از پرداخت)</CardTitle></CardHeader><CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3">
+      <Card className="border-slate-800 bg-slate-900 text-slate-100"><CardHeader><CardTitle className="text-white text-lg flex items-center gap-2"><Plus className="h-5 w-5" /> مدرسه جدید (بعد از پرداخت)</CardTitle></CardHeader><CardContent className="grid grid-cols-1 md:grid-cols-7 gap-3">
         <div className="space-y-1"><Label className="text-xs text-slate-400">نام هنرستان/مدرسه</Label><Input className="bg-slate-800 border-slate-700 text-white" value={name} onChange={e => setName(e.target.value)} placeholder="مثلاً هنرستان نمونه" /></div>
         <div className="space-y-1"><Label className="text-xs text-slate-400">کد مدرسه (اختیاری)</Label><Input dir="ltr" className="text-left bg-slate-800 border-slate-700 text-white" value={code} onChange={e => setCode(e.target.value)} placeholder="خالی = خودکار" /></div>
         <div className="space-y-1"><Label className="text-xs text-slate-400">تلفن (اختیاری)</Label><Input dir="ltr" className="text-left bg-slate-800 border-slate-700 text-white" value={phone} onChange={e => setPhone(e.target.value)} /></div>
         <div className="space-y-1"><Label className="text-xs text-slate-400">مدت اشتراک</Label><Select value={months} onValueChange={setMonths}><SelectTrigger className="w-full bg-slate-800 border-slate-700 text-slate-100"><SelectValue /></SelectTrigger><SelectContent className="bg-slate-900 border-slate-700 text-slate-100">{["1", "3", "6", "12"].map(v => <SelectItem key={v} value={v}>{v} ماه</SelectItem>)}</SelectContent></Select></div>
-        <div className="flex items-end"><Button className="w-full bg-emerald-600 hover:bg-emerald-500" disabled={createSchool.isPending || !name.trim()} onClick={() => createSchool.mutate({ name: name.trim(), code: code.trim() || undefined, phone: phone.trim() || undefined, months: Number(months) })}>ساخت مدرسه</Button></div>
+        <div className="space-y-1"><Label className="text-xs text-slate-400">نام کاربری ادمین مدرسه</Label><Input dir="ltr" className="text-left bg-slate-800 border-slate-700 text-white" value={adminUser} onChange={e => setAdminUser(e.target.value)} placeholder="manager1" /></div>
+        <div className="space-y-1"><Label className="text-xs text-slate-400">رمز ادمین</Label><Input dir="ltr" className="text-left bg-slate-800 border-slate-700 text-white" value={adminPass} onChange={e => setAdminPass(e.target.value)} placeholder="حداقل ۶ نویسه" /></div>
+        <div className="flex items-end"><Button className="w-full bg-emerald-600 hover:bg-emerald-500" disabled={createSchool.isPending || !name.trim() || !adminUser.trim() || adminPass.length < 6} onClick={() => createSchool.mutate({ name: name.trim(), code: code.trim() || undefined, phone: phone.trim() || undefined, months: Number(months), adminUsername: adminUser.trim(), adminPassword: adminPass })}>ساخت مدرسه</Button></div>
       </CardContent></Card>
 
-      <Card className="border-slate-800 bg-slate-900 text-slate-100"><CardHeader><CardTitle className="text-white text-lg">مدارس ({list.length})</CardTitle></CardHeader><CardContent className="space-y-2">
+      <Card className="border-slate-800 bg-slate-900 text-slate-100"><CardHeader><div className="flex items-center justify-between gap-3 flex-wrap"><CardTitle className="text-white text-lg">مدارس ({list.length})</CardTitle>{list.length > 0 && <SearchInput value={schoolQ} onChange={setSchoolQ} placeholder="جست‌وجوی نام/کد مدرسه…" />}</div></CardHeader><CardContent className="space-y-2">
         {list.length === 0 && <p className="text-sm text-slate-400 text-center py-6">هنوز مدرسه‌ای نساخته‌اید</p>}
-        {list.map(s => <div key={s.id} className={`rounded-xl border p-4 ${selected === s.id ? "border-emerald-500/60 bg-slate-800/60" : "border-slate-800 bg-slate-800/30"}`}>
+        {schoolRows.map(s => <div key={s.id} className={`rounded-xl border p-4 ${selected === s.id ? "border-emerald-500/60 bg-slate-800/60" : "border-slate-800 bg-slate-800/30"}`}>
           <div className="flex flex-wrap items-center gap-3">
             <button className="flex-1 text-right" onClick={() => setSelected(s.id === selected ? null : s.id)}><p className="font-bold">{s.name}</p><p className="text-xs text-slate-400 mt-0.5">کد ورود: <span dir="ltr" className="font-mono font-bold text-emerald-400">{s.code}</span> · {s.classCount} کلاس · {s.studentCount} دانش‌آموز · {s.userCount} کاربر</p></button>
             {stateBadge(s)}
@@ -111,22 +116,23 @@ export default function SuperAdmin() {
         </div>)}
       </CardContent></Card>
 
-      {current && <Card className="border-emerald-800 bg-slate-900 text-slate-100"><CardHeader><CardTitle className="text-white text-lg flex items-center gap-2"><UserPlus className="h-5 w-5" /> کاربران «{current.name}»</CardTitle></CardHeader><CardContent className="space-y-4">
+      {current && <Card className="border-emerald-800 bg-slate-900 text-slate-100"><CardHeader><CardTitle className="text-white text-lg flex items-center gap-2"><UserCog className="h-5 w-5" /> ادمین مدرسه «{current.name}»</CardTitle></CardHeader><CardContent className="space-y-4">
+        <p className="text-xs text-slate-400">سوپرادمین فقط ادمین (مدیر) مدرسه را تعیین می‌کند؛ ساخت معلم و تنظیمگر داخل پنل مدرسه انجام می‌شود (مدیریت ← کاربران).</p>
         <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
           <div className="space-y-1"><Label className="text-xs text-slate-400">نام کاربری</Label><Input dir="ltr" className="text-left bg-slate-800 border-slate-700 text-white" value={nu.username} onChange={e => setNu({ ...nu, username: e.target.value })} placeholder="manager1" /></div>
           <div className="space-y-1"><Label className="text-xs text-slate-400">نام نمایشی</Label><Input className="bg-slate-800 border-slate-700 text-white" value={nu.displayName} onChange={e => setNu({ ...nu, displayName: e.target.value })} placeholder="نام مدیر" /></div>
           <div className="space-y-1"><Label className="text-xs text-slate-400">رمز عبور</Label><Input dir="ltr" className="text-left bg-slate-800 border-slate-700 text-white" value={nu.password} onChange={e => setNu({ ...nu, password: e.target.value })} placeholder="حداقل ۶ نویسه" /></div>
-          <div className="space-y-1"><Label className="text-xs text-slate-400">نقش</Label><Select value={nu.platformRole} onValueChange={v => setNu({ ...nu, platformRole: v as any })}><SelectTrigger className="w-full bg-slate-800 border-slate-700 text-slate-100"><SelectValue /></SelectTrigger><SelectContent className="bg-slate-900 border-slate-700 text-slate-100"><SelectItem value="manager">مدیر (دسترسی کامل)</SelectItem><SelectItem value="scheduler">تنظیمگر (کلاس/دانش‌آموز)</SelectItem><SelectItem value="teacher">معلم (امتیاز/نمره/حضور)</SelectItem></SelectContent></Select></div>
-          <div className="flex items-end"><Button className="w-full bg-emerald-600 hover:bg-emerald-500" disabled={!nu.username.trim() || nu.password.length < 6 || createUser.isPending} onClick={() => createUser.mutate({ schoolId: current.id, username: nu.username.trim(), password: nu.password, displayName: nu.displayName.trim() || undefined, platformRole: nu.platformRole })}>ساخت کاربر</Button></div>
+          <div className="flex items-end"><Button className="w-full bg-emerald-600 hover:bg-emerald-500" disabled={!nu.username.trim() || nu.password.length < 6 || createUser.isPending} onClick={() => createUser.mutate({ schoolId: current.id, username: nu.username.trim(), password: nu.password, displayName: nu.displayName.trim() || undefined, platformRole: "manager" })}>ساخت ادمین</Button></div>
         </div>
-        <div className="space-y-2">{(users.data ?? []).map((u: any) => <div key={u.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/30 p-3">
+        {userRows.length > 0 && <div className="flex justify-end"><SearchInput value={userQ} onChange={setUserQ} placeholder="جست‌وجوی کاربر…" /></div>}
+        <div className="space-y-2">{userRows.map((u: any) => <div key={u.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/30 p-3">
           <div className="flex-1"><p className="font-bold text-sm">{u.displayName ?? u.username} <span dir="ltr" className="text-slate-400 font-mono text-xs">({u.username})</span></p><p className="text-xs text-slate-400">{u.platformRole === "manager" ? "مدیر" : u.platformRole === "scheduler" ? "تنظیمگر" : "معلم"} · آخرین ورود: {u.lastSignedIn ? new Date(u.lastSignedIn).toLocaleDateString("fa-IR") : "—"}</p></div>
           <Badge className={u.active ? "bg-emerald-100 text-emerald-700 border-0" : "bg-slate-700 text-slate-300 border-0"}>{u.active ? "فعال" : "غیرفعال"}</Badge>
           <Button size="sm" variant="outline" className="border-slate-600" onClick={() => setPwUser({ id: u.id, username: u.username })}><KeyRound className="h-3.5 w-3.5" /> رمز</Button>
           <Button size="sm" variant="outline" className="border-slate-600" onClick={() => toggleUser.mutate({ userId: u.id, active: !u.active })}>{u.active ? "غیرفعال" : "فعال"}</Button>
           <Button size="sm" variant="outline" className="border-red-800 text-red-400" onClick={() => { if (window.confirm(`حذف کاربر ${u.username}؟`)) deleteUser.mutate({ userId: u.id }); }}><Trash2 className="h-3.5 w-3.5" /></Button>
         </div>)}
-        {(users.data ?? []).length === 0 && <p className="text-sm text-slate-400 text-center py-4">برای این مدرسه هنوز کاربری نساخته‌اید — مدیر مدرسه حداقل یک «مدیر» لازم دارد</p>}
+        {(users.data ?? []).length === 0 && <p className="text-sm text-slate-400 text-center py-4">این مدرسه ادمین ندارد — همان بالا بسازید</p>}
       </div>
       </CardContent></Card>}
 

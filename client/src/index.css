@@ -185,17 +185,18 @@
   }
 }
 
-.mobile-panel-nav { display: none; }
+/* تب‌ها روی همه اندازه‌ها (دسکتاپ + موبایل): ناوبری نمایان و فقط پنل فعال دیده می‌شود */
+.mobile-panel-nav { display: block; }
+.app-shell[data-panel="overview"] .mobile-panel:not(.panel-overview) { display: none !important; }
+.app-shell[data-panel="attendance"] .mobile-panel:not(.panel-attendance) { display: none !important; }
+.app-shell[data-panel="points"] .mobile-panel:not(.panel-points) { display: none !important; }
+.app-shell[data-panel="reports"] .mobile-panel:not(.panel-reports) { display: none !important; }
+.app-shell[data-panel="management"] .mobile-panel:not(.panel-management) { display: none !important; }
+.app-shell[data-panel="referrals"] .mobile-panel:not(.panel-referrals) { display: none !important; }
 @media (max-width: 767px) {
   html, body, #root, .app-shell { width: 100vw !important; max-width: 100vw !important; overflow-x: hidden !important; }
   .mobile-panel-nav, .app-shell main { width: 100% !important; max-width: 100% !important; }
-  .mobile-panel-nav { display: block; }
-  .app-shell[data-panel="overview"] .mobile-panel:not(.panel-overview) { display: none !important; }
-  .app-shell[data-panel="attendance"] .mobile-panel:not(.panel-attendance) { display: none !important; }
-  .app-shell[data-panel="points"] .mobile-panel:not(.panel-points) { display: none !important; }
-  .app-shell[data-panel="reports"] .mobile-panel:not(.panel-reports) { display: none !important; }
-  .app-shell[data-panel="management"] .mobile-panel:not(.panel-management) { display: none !important; }
-  .app-shell[data-panel="referrals"] .mobile-panel:not(.panel-referrals) { display: none !important; }
+  .mobile-panel-nav > div { overflow-x: auto; }
   .app-shell main { padding: 1rem !important; }
   .app-shell main.space-y-7 > :not([hidden]) ~ :not([hidden]) { margin-top: 1rem; }
 }

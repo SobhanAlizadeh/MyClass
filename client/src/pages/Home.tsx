@@ -4,7 +4,7 @@ import { trpc } from "@/lib/trpc";
 import { setAuthToken } from "@/lib/auth-token";
 import { useTheme } from "@/contexts/ThemeContext";
 import { formatJalali, formatJalaliShort } from "@/lib/jalali";
-import { today, gradeTypeLabels, type Kind, type GradeType } from "@/panels/shared";
+import { today, gradeTypeLabels, type Kind, type GradeType, PanelErrorBoundary } from "@/panels/shared";
 import { buildReportPrintHtml, printHtmlInIframe, type PrintActivity } from "@/lib/print-report";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,7 +17,6 @@ import { OverviewPanel } from "@/panels/OverviewPanel";
 import { AttendancePanel } from "@/panels/AttendancePanel";
 import { PointsPanel } from "@/panels/PointsPanel";
 import { ReportsPanel } from "@/panels/ReportsPanel";
-import { SubjectPanel } from "@/panels/SubjectPanel";
 import { ManagementPanel } from "@/panels/ManagementPanel";
 import { ReferralsPanel } from "@/panels/ReferralsPanel";
 import { PanelButton } from "@/panels/shared";
@@ -281,13 +280,12 @@ export default function Home() {
     <header className="border-b bg-white/90 backdrop-blur sticky top-0 z-20"><div className="max-w-[1440px] mx-auto px-6 h-20 flex items-center justify-between"><div className="flex items-center gap-3"><div className="h-11 w-11 rounded-2xl bg-[#0f766e] text-white grid place-items-center shadow-lg"><School className="h-6 w-6" /></div><div><p className="font-black text-xl tracking-tight">{school?.name ?? "دفترکلاس"}</p><p className="text-xs text-slate-500">پنل {roleLabels[role] ?? "کاربر"} · دفترکلاس</p></div></div><div className="flex items-center gap-3">{school && <div className="hidden md:block text-xs rounded-xl bg-teal-50 text-teal-800 px-3 py-1.5 font-semibold">اشتراک تا {school.subscriptionEnd ?? "—"}{school.daysLeft != null ? ` · ${school.daysLeft} روز` : ""}</div>}<div className="hidden sm:block text-left"><p className="text-sm font-semibold">امروز، {formatJalali(new Date())}</p><p className="text-xs text-slate-500">{user?.displayName ?? "کاربر دفترکلاس"}</p></div><Button type="button" variant="outline" size="icon" onClick={() => toggleTheme?.()} aria-label={theme === "dark" ? "فعال‌سازی تم روشن" : "فعال‌سازی تم تاریک"} title={theme === "dark" ? "تم روشن" : "تم تاریک"} className="rounded-xl border-slate-200 dark:border-slate-700">{theme === "dark" ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-slate-700" />}</Button><Button type="button" variant="outline" size="sm" onClick={() => { void logout(); }} className="rounded-xl border-slate-200">خروج</Button></div></div></header>
     <nav className="mobile-panel-nav max-w-[1440px] mx-auto px-4 sm:px-6 pt-3" aria-label="بخش‌های دفترکلاس"><div className="grid gap-1 rounded-2xl bg-white p-1.5 shadow-sm border" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>{tabs.includes("overview") && <PanelButton active={activePanel === "overview"} onClick={() => setActivePanel("overview")}>نمای کلی</PanelButton>}{tabs.includes("attendance") && <PanelButton active={activePanel === "attendance"} onClick={() => setActivePanel("attendance")}>ثبت</PanelButton>}{tabs.includes("points") && <PanelButton active={activePanel === "points"} onClick={() => setActivePanel("points")}>امتیاز</PanelButton>}{tabs.includes("reports") && <PanelButton active={activePanel === "reports"} onClick={() => setActivePanel("reports")}>گزارش</PanelButton>}{tabs.includes("referrals") && <PanelButton active={activePanel === "referrals"} onClick={() => setActivePanel("referrals")}>دعوت‌ها</PanelButton>}{tabs.includes("management") && <PanelButton active={activePanel === "management"} onClick={() => setActivePanel("management")}>مدیریت</PanelButton>}</div></nav>
     <main className="max-w-[1440px] mx-auto p-6 space-y-7">
-      <OverviewPanel ctx={ctx} />
-      <AttendancePanel ctx={ctx} />
-      <PointsPanel ctx={ctx} />
-      <ReportsPanel ctx={ctx} />
-      <SubjectPanel ctx={ctx} />
-      <ManagementPanel ctx={ctx} />
-      {role === "manager" && <ReferralsPanel ctx={ctx} />}
+      <PanelErrorBoundary name="overview"><OverviewPanel ctx={ctx} /></PanelErrorBoundary>
+      <PanelErrorBoundary name="attendance"><AttendancePanel ctx={ctx} /></PanelErrorBoundary>
+      <PanelErrorBoundary name="points"><PointsPanel ctx={ctx} /></PanelErrorBoundary>
+      <PanelErrorBoundary name="reports"><ReportsPanel ctx={ctx} /></PanelErrorBoundary>
+      <PanelErrorBoundary name="management"><ManagementPanel ctx={ctx} role={role} /></PanelErrorBoundary>
+      {role === "manager" && <PanelErrorBoundary name="referrals"><ReferralsPanel ctx={ctx} /></PanelErrorBoundary>}
     </main>
   </div>;
 }

@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { formatJalali, formatJalaliShort } from "@/lib/jalali";
 import { buildReferralPrintHtml, printHtmlInIframe } from "@/lib/print-report";
-import { JalaliDatePicker, Field, Stat, StudentSelect, TeamSelect, QuickButton, Empty, gradeTypeLabels } from "./shared";
+import { JalaliDatePicker, Field, Stat, StudentSelect, TeamSelect, QuickButton, Empty, gradeTypeLabels, SearchInput, matchesQuery } from "./shared";
 import { Check, ClipboardList, Edit3, Medal, Printer, Send, Settings2, Share2, Sparkles, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 export function ReferralsPanel({ ctx }: { ctx: any }) {
@@ -28,8 +28,10 @@ export function ReferralsPanel({ ctx }: { ctx: any }) {
   const [ptsInput, setPtsInput] = useState("");
   const pts = settings.data?.points ?? 3;
   const penalty = settings.data?.leavePenalty ?? true;
+  const [query, setQuery] = useState("");
   const rows = data?.referrals ?? [];
   const noLinkStudents = data?.noLinkStudents ?? [];
+  const visibleRows = rows.filter(r => matchesQuery(query, r.studentName, r.className, r.code, r.telegramUsername));
   const totalJoins = rows.reduce((sum, r) => sum + r.joinCount, 0);
   const totalLeft = rows.reduce((sum, r) => sum + r.leaveCount, 0);
   const totalPoints = rows.reduce((sum, r) => sum + Math.max(0, r.joinCount - r.leaveCount), 0) * pts;
@@ -133,11 +135,14 @@ export function ReferralsPanel({ ctx }: { ctx: any }) {
               </div>
             </div>
           </div>
+          {rows.length > 0 && <div className="flex items-center justify-between gap-3 flex-wrap"><SearchInput value={query} onChange={setQuery} placeholder="جست‌وجوی نام دانش‌آموز/کلاس/کد…" /><Badge variant="outline" className="border-slate-200 text-slate-600">{visibleRows.length} از {rows.length} لینک</Badge></div>}
           {rows.length === 0 ? (
             <Empty text="هنوز لینکی ساخته نشده؛ دانش‌آموز در بات تلگرام /start بزند و نام خود را (مطابق سایت) بفرستد تا لینک اختصاصی بگیرد" />
+          ) : visibleRows.length === 0 ? (
+            <Empty text="نتیجه‌ای برای این جست‌وجو نیست" />
           ) : (
             <div className="space-y-2">
-              {rows.map(r => {
+              {visibleRows.map(r => {
                 const effective = Math.max(0, r.joinCount - r.leaveCount);
                 return (
                   <div key={r.id} className="rounded-xl bg-slate-50 overflow-hidden">

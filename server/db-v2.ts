@@ -151,7 +151,7 @@ export async function listSchoolsWithStats(): Promise<Array<School & { classCoun
   });
 }
 
-export async function createTenantSchool(input: { name: string; code?: string; phone?: string; months: number; note?: string }): Promise<School> {
+export async function createTenantSchool(input: { name: string; code?: string; phone?: string; months: number; note?: string; adminUsername?: string; adminPassword?: string }): Promise<School & { admin?: SchoolUserInfo }> {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
   const name = input.name.trim();
@@ -175,7 +175,13 @@ export async function createTenantSchool(input: { name: string; code?: string; p
   const id = Number((rows as Array<{ id: number }>)[0]?.id);
   const created = await getSchoolById(id);
   if (!created) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "مدرسه ساخته شد اما خواندن آن ممکن نشد" });
-  return created;
+  // ادمین مدرسه همان لحظه‌ی ساخت حساب می‌شود — سوپرادمین فقط همین یک حساب را تعیین می‌کند؛
+  // معلم و تنظیمگر بعداً داخل پنل مدرسه توسط مدیر/تنظیمگر ساخته می‌شوند
+  let admin: SchoolUserInfo | undefined;
+  if (input.adminUsername?.trim() && input.adminPassword) {
+    admin = await createSchoolUser({ schoolId: id, username: input.adminUsername.trim(), password: input.adminPassword, displayName: "مدیر " + name, platformRole: "manager" });
+  }
+  return { ...created, admin };
 }
 
 export async function updateTenantSchool(input: { id: number; name?: string; phone?: string | null; status?: "active" | "pending" | "suspended"; extendMonths?: number; setSubscriptionEnd?: string; note?: string | null }): Promise<School> {
@@ -204,11 +210,11 @@ export async function updateTenantSchool(input: { id: number; name?: string; pho
 export async function deleteTenantSchool(id: number): Promise<void> {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
-  // حذف آبشاری دستی: دانش‌آموزان/کلاس‌ها/تیم‌ها/کاربران مدرسه
+  // حذف آبشاری دستی: همه کاربران/دانش‌آموزان/کلاس‌ها/تیم‌های مدرسه (رفع باگ: کاربران غیرمدیر یتیم می‌ماندند)
   await db.delete(students).where(eq(students.schoolId, id));
   await db.delete(teams).where(eq(teams.schoolId, id));
   await db.delete(classes).where(eq(classes.schoolId, id));
-  await db.delete(users).where(and(eq(users.schoolId, id), eq(users.platformRole, "manager")));
+  await db.delete(users).where(eq(users.schoolId, id));
   await db.delete(schools).where(eq(schools.id, id));
 }
 
@@ -263,6 +269,26 @@ export async function deleteUserById(userId: number): Promise<void> {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
   await db.delete(users).where(eq(users.id, userId));
+}
+
+// --- School-side user management (manager/scheduler in the school panel) -----------
+// کاربر هدف باید به مدرسه‌ی درخواست‌کننده تعلق داشته باشد (ضد cross-tenant)؛
+// تنظیمگر حق تغییر حساب‌های «مدیر» را ندارد — آن کار فقط با مدیر است.
+export async function getSchoolUserOwned(userId: number, schoolId: number, requesterRole: string): Promise<SchoolUserInfo & { schoolId: number }> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: users.id, username: users.username, displayName: users.displayName, platformRole: users.platformRole, active: users.active, createdAt: users.createdAt, lastSignedIn: users.lastSignedIn, schoolId: users.schoolId }).from(users).where(eq(users.id, userId)).limit(1);
+  const row = rows[0];
+  if (!row || row.schoolId !== schoolId) throw new TRPCError({ code: "NOT_FOUND", message: "کاربر پیدا نشد" });
+  if (requesterRole === "scheduler" && row.platformRole === "manager") throw new TRPCError({ code: "FORBIDDEN", message: "تغییر حساب مدیر فقط توسط مدیر مدرسه امکان‌پذیر است" });
+  return { id: row.id, username: String(row.username), displayName: row.displayName ?? null, platformRole: row.platformRole ?? "teacher", active: row.active, createdAt: row.createdAt, lastSignedIn: row.lastSignedIn, schoolId: row.schoolId };
+}
+
+export async function countActiveManagers(schoolId: number, excludeUserId?: number): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: users.id, platformRole: users.platformRole, active: users.active }).from(users).where(and(eq(users.schoolId, schoolId), eq(users.platformRole, "manager"), eq(users.active, 1)));
+  return rows.filter(r => r.id !== excludeUserId).length;
 }
 
 // --- Login (school staff) --------------------------------------------------------
