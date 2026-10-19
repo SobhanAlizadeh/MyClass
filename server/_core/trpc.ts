@@ -46,9 +46,10 @@ export const adminProcedure = t.procedure.use(
 
 // --- v2 RBAC procedures ---------------------------------------------------------
 // platformRole: super_admin | manager | scheduler | teacher (manager = دسترسی کامل مدرسه)
-import { isSuperAdmin, requireSchoolContext, type SchoolContext } from "../db-v2";
+import { isSuperAdmin, requireSchoolContext } from "../db-v2";
+import type { School } from "../../drizzle/schema";
 
-export type SchoolUserCtx = TrpcContext & { user: NonNullable<TrpcContext["user"]>; school: SchoolContext["school"] };
+export type SchoolUserCtx = TrpcContext & { user: NonNullable<TrpcContext["user"]>; schoolId: number | null; school: School | null };
 
 const SCHOOL_ROLE_MESSAGES = {
   noSchool: "این عملیات فقط برای کاربران مدارس است",
@@ -66,7 +67,7 @@ export function schoolProcedure(allowedRoles: string[]) {
       if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
       if (isSuperAdmin(ctx.user)) {
         // سوپرادمین می‌تواند به‌عنوان ناظر وارد هر مسیر شود؛ schoolId را باید ورودی بدهد
-        return next({ ctx: { ...ctx, user: ctx.user, schoolId: null as number | null, school: null as SchoolContext["school"] } });
+        return next({ ctx: { ...ctx, user: ctx.user, schoolId: null as number | null, school: null as School | null } });
       }
       if (!ctx.user.schoolId) throw new TRPCError({ code: "FORBIDDEN", message: SCHOOL_ROLE_MESSAGES.noSchool });
       if (!hasRole(ctx.user.platformRole, allowedRoles)) throw new TRPCError({ code: "FORBIDDEN", message: SCHOOL_ROLE_MESSAGES.forbidden });

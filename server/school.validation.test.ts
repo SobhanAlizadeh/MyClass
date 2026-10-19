@@ -5,7 +5,7 @@ import type { TrpcContext } from "./_core/context";
 
 function caller() {
   const ctx: TrpcContext = {
-    user: { id: 1, openId: "teacher", email: "teacher@example.com", name: "Teacher", loginMethod: "manus", role: "admin", createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date() },
+    user: { id: 1, openId: "u_1_teacher", email: "teacher@example.com", name: "Teacher", loginMethod: "password", role: "user", username: "teacher", passwordHash: null, platformRole: "teacher", schoolId: 1, displayName: "Teacher", active: 1, createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date() },
     req: { protocol: "https", headers: {} } as TrpcContext["req"],
     res: {} as TrpcContext["res"],
   };

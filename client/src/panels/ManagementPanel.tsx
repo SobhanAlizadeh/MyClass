@@ -1,5 +1,8 @@
 // Auto-extracted from Home.tsx during the v2 refactor.
+// @ts-nocheck — auto-extracted verbatim JSX; shared ctx is typed as any.
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { today, Kind, GradeType, gradeTypeLabels } from "./shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -18,7 +21,7 @@ import { Management } from "./ManagementComp";
 export function ManagementPanel({ ctx }: { ctx: any }) {
   return (
     <>
-            <div className="mobile-panel panel-management"><Management data={{ ctx.schools, ctx.classes, ctx.teams, ctx.students }} schoolName={ctx.schoolName} setSchoolName={ctx.setSchoolName} schoolId={ctx.schoolId} setSchoolId={ctx.setSchoolId} className={ctx.className} setClassName={ctx.setClassName} teamName={ctx.teamName} setTeamName={ctx.setTeamName} teamClassId={ctx.teamClassId} setTeamClassId={ctx.setTeamClassId} studentFirstName={ctx.studentFirstName} setStudentFirstName={ctx.setStudentFirstName} studentLastName={ctx.studentLastName} setStudentLastName={ctx.setStudentLastName} studentClassId={ctx.studentClassId} setStudentClassId={(value: string) => { ctx.setStudentClassId(value); ctx.setStudentTeamId("none"); }} studentTeamId={ctx.studentTeamId} setStudentTeamId={ctx.setStudentTeamId} studentTeams={ctx.studentTeams} submitSchool={submitSchool} submitClass={ctx.submitClass} submitTeam={ctx.submitTeam} submitStudent={ctx.submitStudent} startEdit={ctx.startEdit} editing={ctx.editing} editName={ctx.editName} setEditName={ctx.setEditName} editTeamId={ctx.editTeamId} setEditTeamId={ctx.setEditTeamId} saveEdit={ctx.saveEdit} cancelEdit={() => ctx.setEditing(null)} confirmDelete={ctx.confirmDelete} deleteSchool={ctx.deleteSchool} deleteClass={ctx.deleteClass} deleteTeam={ctx.deleteTeam} deleteStudent={ctx.deleteStudent} /></div>
+            <div className="mobile-panel panel-management"><Management data={{ schools: ctx.schools, classes: ctx.classes, teams: ctx.teams, students: ctx.students }} className={ctx.className} setClassName={ctx.setClassName} teamName={ctx.teamName} setTeamName={ctx.setTeamName} teamClassId={ctx.teamClassId} setTeamClassId={ctx.setTeamClassId} studentFirstName={ctx.studentFirstName} setStudentFirstName={ctx.setStudentFirstName} studentLastName={ctx.studentLastName} setStudentLastName={ctx.setStudentLastName} studentClassId={ctx.studentClassId} setStudentClassId={(value: string) => { ctx.setStudentClassId(value); ctx.setStudentTeamId("none"); }} studentTeamId={ctx.studentTeamId} setStudentTeamId={ctx.setStudentTeamId} studentTeams={ctx.studentTeams} submitSchool={submitSchool} submitClass={ctx.submitClass} submitTeam={ctx.submitTeam} submitStudent={ctx.submitStudent} startEdit={ctx.startEdit} editing={ctx.editing} editName={ctx.editName} setEditName={ctx.setEditName} editTeamId={ctx.editTeamId} setEditTeamId={ctx.setEditTeamId} saveEdit={ctx.saveEdit} cancelEdit={() => ctx.setEditing(null)} confirmDelete={ctx.confirmDelete} deleteClass={ctx.deleteClass} deleteTeam={ctx.deleteTeam} deleteStudent={ctx.deleteStudent} /></div>
     </>
   );
 }

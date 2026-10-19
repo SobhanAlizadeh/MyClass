@@ -160,6 +160,5 @@ const printHtmlInIframe = (html: string) => {
 };
 
 
-
 export { buildReportPrintHtml, buildReferralPrintHtml, printHtmlInIframe };
 export type { PrintActivity };

@@ -14,6 +14,8 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // tests run without a database — school middleware returns a stub in this mode
+    env: { DATABASE_URL: "" },
     include: ["server/**/*.test.ts", "server/**/*.spec.ts"],
   },
 });

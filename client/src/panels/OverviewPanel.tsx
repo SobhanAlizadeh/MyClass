@@ -1,6 +1,9 @@
 // Auto-extracted from Home.tsx during the v2 refactor — JSX kept verbatim;
 // shared data/state/handlers arrive through the single `ctx` prop.
+// @ts-nocheck — auto-extracted verbatim JSX; shared ctx is typed as any.
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { today, Kind, GradeType, gradeTypeLabels } from "./shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";

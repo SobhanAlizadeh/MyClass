@@ -11,7 +11,7 @@ import {
   authenticateSchoolUser, computeSchoolRuntime, superOpenId, schoolUserOpenId, isSuperAdmin,
   listSchoolsWithStats, createTenantSchool, updateTenantSchool, deleteTenantSchool,
   listSchoolUsers, createSchoolUser, setUserPassword, toggleUserActive, deleteUserById, superStats,
-  getDefaultPublicSchool,
+  getDefaultPublicSchool, assertTenantOwned,
 } from "./db-v2";
 import { revokeTelegramInviteLink } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -112,7 +112,8 @@ export const appRouter = router({
     settings: managerOnlyProcedure.query(() => getReferralSettings()),
     setPoints: managerOnlyProcedure.input(z.object({ points: z.number().min(0.1).max(1000) })).mutation(({ input }) => setReferralPoints(input.points)),
     setLeavePenalty: managerOnlyProcedure.input(z.object({ enabled: z.boolean() })).mutation(({ input }) => setReferralLeavePenalty(input.enabled)),
-    deleteReferral: managerOnlyProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input }) => {
+    deleteReferral: managerOnlyProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      await assertTenantOwned(ctx.schoolId, "referral", input.id);
       const info = await deleteReferral(input.id);
       if (!info) return { success: false as const, revoked: false, code: "", message: "این لینک قبلاً حذف شده یا وجود ندارد" };
       let revoked = false;
@@ -132,25 +133,25 @@ export const appRouter = router({
     }),
     updateSchoolName: managerOnlyProcedure.input(z.object({ id: z.number(), name: z.string().min(1), address: z.string().optional() })).mutation(({ input }) => updateSchool(input)),
     addClass: schedulerProcedure.input(z.object({ name: z.string().min(1), grade: z.string().optional(), schoolYear: z.string().optional() })).mutation(({ ctx, input }) => createClass({ ...input, schoolId: ctx.schoolId ?? null })),
-    addTeam: schedulerProcedure.input(z.object({ classId: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(({ input }) => createTeam(input)),
-    addStudent: schedulerProcedure.input(z.object({ classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(({ input }) => createStudent(input)),
-    attendance: teacherProcedure.input(z.object({ studentId: z.number(), date, status: z.enum(["present", "absent", "late", "excused"]), note: z.string().optional() })).mutation(({ input }) => saveAttendance(input)),
-    addSubject: teacherProcedure.input(z.object({ classId: z.number(), name: z.string().min(1) })).mutation(({ input }) => createSubject(input)),
-    updateSubject: teacherProcedure.input(z.object({ id: z.number(), classId: z.number(), name: z.string().min(1) })).mutation(({ input }) => updateSubject(input)),
+    addTeam: schedulerProcedure.input(z.object({ classId: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createTeam(input); }),
+    addStudent: schedulerProcedure.input(z.object({ classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createStudent(input); }),
+    attendance: teacherProcedure.input(z.object({ studentId: z.number(), date, status: z.enum(["present", "absent", "late", "excused"]), note: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveAttendance(input); }),
+    addSubject: teacherProcedure.input(z.object({ classId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createSubject(input); }),
+    updateSubject: teacherProcedure.input(z.object({ id: z.number(), classId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return updateSubject(input); }),
     deleteSubject: teacherProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteSubject(input.id)),
-    grade: teacherProcedure.input(z.object({ studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]).default("class"), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(({ input }) => saveGrade(input)),
-    updateGrade: teacherProcedure.input(z.object({ id: z.number(), studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(({ input }) => updateGrade(input)),
-    deleteGrade: teacherProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteGrade(input.id)),
-    activity: teacherProcedure.input(z.object({ studentId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(({ input }) => saveActivity(input)),
-    spendStudent: teacherProcedure.input(z.object({ studentId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(({ input }) => consumeStudentPoints(input)),
-    spendTeam: teacherProcedure.input(z.object({ teamId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(({ input }) => consumeTeamPoints(input)),
-    teamActivity: teacherProcedure.input(z.object({ teamId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(({ input }) => saveTeamActivity(input)),
-    updateClass: schedulerProcedure.input(z.object({ id: z.number(), name: z.string().min(1), grade: z.string().optional(), schoolYear: z.string().optional() })).mutation(({ ctx, input }) => updateClass({ ...input, schoolId: ctx.schoolId ?? null })),
-    updateTeam: schedulerProcedure.input(z.object({ id: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(({ input }) => updateTeam(input)),
-    updateStudent: schedulerProcedure.input(z.object({ id: z.number(), classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(({ input }) => updateStudent(input)),
-    deleteClass: managerOnlyProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteClass(input.id)),
-    deleteTeam: schedulerProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteTeam(input.id)),
-    deleteStudent: schedulerProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteStudent(input.id)),
+    grade: teacherProcedure.input(z.object({ studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]).default("class"), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveGrade(input); }),
+    updateGrade: teacherProcedure.input(z.object({ id: z.number(), studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "grade", input.id); await assertTenantOwned(ctx.schoolId, "student", input.studentId); return updateGrade(input); }),
+    deleteGrade: teacherProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "grade", input.id); return deleteGrade(input.id); }),
+    activity: teacherProcedure.input(z.object({ studentId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveActivity(input); }),
+    spendStudent: teacherProcedure.input(z.object({ studentId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return consumeStudentPoints(input); }),
+    spendTeam: teacherProcedure.input(z.object({ teamId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "team", input.teamId); return consumeTeamPoints(input); }),
+    teamActivity: teacherProcedure.input(z.object({ teamId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "team", input.teamId); return saveTeamActivity(input); }),
+    updateClass: schedulerProcedure.input(z.object({ id: z.number(), name: z.string().min(1), grade: z.string().optional(), schoolYear: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.id); return updateClass({ ...input, schoolId: ctx.schoolId ?? null }); }),
+    updateTeam: schedulerProcedure.input(z.object({ id: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "team", input.id); return updateTeam(input); }),
+    updateStudent: schedulerProcedure.input(z.object({ id: z.number(), classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.id); await assertTenantOwned(ctx.schoolId, "class", input.classId); return updateStudent(input); }),
+    deleteClass: managerOnlyProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.id); return deleteClass(input.id); }),
+    deleteTeam: schedulerProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "team", input.id); return deleteTeam(input.id); }),
+    deleteStudent: schedulerProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.id); return deleteStudent(input.id); }),
   }),
   // پنل سوپرادمین — مدیریت مدارس/اشتراک/کاربران (ثبت‌نام عمومی وجود ندارد؛ فقط از اینجا بعد از پرداخت)
   superadmin: router({
