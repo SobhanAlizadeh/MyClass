@@ -129,6 +129,10 @@ class SDKServer {
     if (!user) {
       throw ForbiddenError("User not found");
     }
+    // v2: کاربر غیرفعال اجازه هیچ درخواستی ندارد
+    if ((user as { active?: number }).active === 0) {
+      throw ForbiddenError("User is deactivated");
+    }
 
     await db.upsertUser({
       openId: user.openId,

@@ -1,4 +1,4 @@
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, ne } from "drizzle-orm";
 import { connect } from "@tidbcloud/serverless";
 import { drizzle } from "drizzle-orm/tidb-serverless";
 import { TRPCError } from "@trpc/server";
@@ -24,7 +24,7 @@ async function assertNoDuplicate(exec: any, table: any, where: any, message: str
   if (rows.length > 0) throw new TRPCError({ code: "CONFLICT", message });
 }
 // ------------------------------------------------------------------------------
-export async function upsertUser(user: InsertUser): Promise<void> { if (!user.openId) throw new Error("User openId is required for upsert"); const db = await getDb(); if (!db) return; const values: InsertUser = { openId: user.openId }; const updateSet: Record<string, unknown> = {}; for (const field of ["name", "email", "loginMethod"] as const) { if (user[field] !== undefined) { values[field] = user[field] ?? null; updateSet[field] = user[field] ?? null; } } if (user.lastSignedIn !== undefined) { values.lastSignedIn = user.lastSignedIn; updateSet.lastSignedIn = user.lastSignedIn; } if (user.role !== undefined) { values.role = user.role; updateSet.role = user.role; } else if (user.openId === getEnv().ownerOpenId) { values.role = 'admin'; updateSet.role = 'admin'; } values.lastSignedIn ??= new Date(); if (!Object.keys(updateSet).length) updateSet.lastSignedIn = new Date(); await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet }); }
+export async function upsertUser(user: InsertUser): Promise<void> { if (!user.openId) throw new Error("User openId is required for upsert"); const db = await getDb(); if (!db) return; const values: InsertUser = { openId: user.openId }; const updateSet: Record<string, unknown> = {}; for (const field of ["name", "email", "loginMethod", "platformRole", "displayName"] as const) { if (user[field] !== undefined) { values[field] = user[field] ?? null; updateSet[field] = user[field] ?? null; } } if (user.lastSignedIn !== undefined) { values.lastSignedIn = user.lastSignedIn; updateSet.lastSignedIn = user.lastSignedIn; } if (user.role !== undefined) { values.role = user.role; updateSet.role = user.role; } else if (user.openId === getEnv().ownerOpenId) { values.role = 'admin'; updateSet.role = 'admin'; } values.lastSignedIn ??= new Date(); if (!Object.keys(updateSet).length) updateSet.lastSignedIn = new Date(); await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet }); }
 export async function getUserByOpenId(openId: string) { const db = await getDb(); if (!db) return undefined; const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1); return result[0]; }
 export function distributeTeamPoints(total: number, memberCount: number) {
   if (memberCount <= 0) return [];
@@ -39,7 +39,8 @@ export function distributeTeamPoints(total: number, memberCount: number) {
   const remainderScaled = scaledTotal - baseScaled * memberCount;
   return Array.from({ length: memberCount }, (_, index) => (baseScaled + (index < Math.abs(remainderScaled) ? Math.sign(remainderScaled) : 0)) / precision);
 }
-export async function getDashboardData() { const db = await getDb(); if (!db) return { schools: [], classes: [], teams: [], students: [], attendance: [], subjects: [], grades: [], activities: [] }; const [schoolRows, classRows, teamRows, studentRows, attendanceRows, subjectRows, gradeRows, activityRows, transferRows] = await Promise.all([db.select().from(schools), db.select().from(classes), db.select().from(teams), db.select().from(students), db.select().from(attendance).orderBy(desc(attendance.date), desc(attendance.id)).limit(200), db.select().from(subjects).orderBy(desc(subjects.id)).limit(200), db.select().from(grades).orderBy(desc(grades.date)).limit(200), db.select().from(activities).orderBy(desc(activities.date), desc(activities.id)).limit(200), db.select().from(studentTeamTransfers).orderBy(desc(studentTeamTransfers.createdAt), desc(studentTeamTransfers.id)).limit(200)]); const uniqueAttendanceRows = attendanceRows.filter((row, index, rows) => index === rows.findIndex(other => other.studentId === row.studentId && other.date === row.date)); return { schools: schoolRows, classes: classRows, teams: teamRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), students: studentRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), attendance: uniqueAttendanceRows, subjects: subjectRows, grades: gradeRows, activities: activityRows, teamTransfers: transferRows }; }
+// v2: همه کوئری‌ها بر اساس مدرسه کاربر (tenant scoping) — schoolId اجباری است
+export async function getDashboardData(schoolId: number) { const db = await getDb(); if (!db) return { schools: [], classes: [], teams: [], students: [], attendance: [], subjects: [], grades: [], activities: [] }; const schoolScope = eq(schools.id, schoolId); const [schoolRows, classRows, teamRows, studentRows, attendanceRows, subjectRows, gradeRows, activityRows, transferRows] = await Promise.all([db.select().from(schools).where(schoolScope), db.select().from(classes).where(eq(classes.schoolId, schoolId)), db.select().from(teams).where(eq(teams.schoolId, schoolId)), db.select().from(students).where(eq(students.schoolId, schoolId)), db.select().from(attendance).where(eq(attendance.schoolId, schoolId)).orderBy(desc(attendance.date), desc(attendance.id)).limit(200), db.select().from(subjects).where(eq(subjects.schoolId, schoolId)).orderBy(desc(subjects.id)).limit(200), db.select().from(grades).where(eq(grades.schoolId, schoolId)).orderBy(desc(grades.date)).limit(200), db.select().from(activities).where(eq(activities.schoolId, schoolId)).orderBy(desc(activities.date), desc(activities.id)).limit(200), db.select().from(studentTeamTransfers).where(eq(studentTeamTransfers.schoolId, schoolId)).orderBy(desc(studentTeamTransfers.createdAt), desc(studentTeamTransfers.id)).limit(200)]); const uniqueAttendanceRows = attendanceRows.filter((row, index, rows) => index === rows.findIndex(other => other.studentId === row.studentId && other.date === row.date)); return { schools: schoolRows, classes: classRows, teams: teamRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), students: studentRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), attendance: uniqueAttendanceRows, subjects: subjectRows, grades: gradeRows, activities: activityRows, teamTransfers: transferRows }; }
 export async function createSchool(input: { name: string; address?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
@@ -55,9 +56,10 @@ export async function updateSchool(input: { id: number; name: string; address?: 
   await db.update(schools).set({ name, address: input.address }).where(eq(schools.id, input.id));
 }
 export async function deleteSchool(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const classRows = await db.select({ id: classes.id }).from(classes).where(eq(classes.schoolId, id)); for (const row of classRows) await deleteClass(row.id); await db.delete(schools).where(eq(schools.id, id)); }
-export async function createStudent(input: { classId: number; teamId?: number | null; firstName: string; lastName: string; studentCode?: string }) {
+export async function createStudent(input: { classId: number; teamId?: number | null; firstName: string; lastName: string; studentCode?: string; schoolId?: number | null }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
+  const cls = await db.select({ schoolId: classes.schoolId }).from(classes).where(eq(classes.id, input.classId)).limit(1);
   const firstName = normFa(input.firstName);
   const lastName = normFa(input.lastName);
   await assertNoDuplicate(db, students, and(eq(students.classId, input.classId), dupClause(students.firstName, firstName), dupClause(students.lastName, lastName)), `دانش‌آموزی با نام «${firstName} ${lastName}» در این کلاس قبلاً ثبت شده است`);
@@ -65,20 +67,21 @@ export async function createStudent(input: { classId: number; teamId?: number | 
     const code = normFa(input.studentCode);
     await assertNoDuplicate(db, students, and(eq(students.classId, input.classId), dupClause(students.studentCode, code)), `در این کلاس شماره دانش‌آموزی «${code}» قبلاً استفاده شده است`);
   }
-  await db.insert(students).values({ ...input, firstName, lastName });
+  await db.insert(students).values({ ...input, firstName, lastName, schoolId: input.schoolId ?? cls[0]?.schoolId ?? null });
 }
 export async function createTeam(input: { classId: number; name: string; color?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const name = normFa(input.name);
+  const cls = await db.select({ schoolId: classes.schoolId }).from(classes).where(eq(classes.id, input.classId)).limit(1);
   await assertNoDuplicate(db, teams, and(eq(teams.classId, input.classId), dupClause(teams.name, name)), `در این کلاس تیمی با نام «${name}» قبلاً ثبت شده است`);
-  await db.insert(teams).values({ ...input, name });
+  await db.insert(teams).values({ ...input, name, schoolId: cls[0]?.schoolId ?? null });
 }
-export async function createClass(input: { schoolId?: number | null; name: string; grade?: string; schoolYear?: string }) {
+export async function createClass(input: { schoolId: number | null; name: string; grade?: string; schoolYear?: string; academicYearId?: number | null }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const name = normFa(input.name);
-  await assertNoDuplicate(db, classes, dupClause(classes.name, name), `کلاسی با نام «${name}» قبلاً ثبت شده است`);
+  await assertNoDuplicate(db, classes, and(dupClause(classes.name, name), input.schoolId != null ? eq(classes.schoolId, input.schoolId) : sql`1=1`), `کلاسی با نام «${name}» قبلاً ثبت شده است`);
   await db.insert(classes).values({ ...input, name });
 }
 export async function updateClass(input: { id: number; schoolId?: number | null; name: string; grade?: string; schoolYear?: string }) {
@@ -136,13 +139,14 @@ export async function updateStudent(input: { id: number; classId: number; teamId
 export async function deleteClass(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const memberRows = await db.select({ id: students.id }).from(students).where(eq(students.classId, id)); const teamRows = await db.select({ id: teams.id }).from(teams).where(eq(teams.classId, id)); for (const row of memberRows) await deleteStudent(row.id); for (const row of teamRows) await db.delete(activities).where(eq(activities.teamId, row.id)); await db.delete(teams).where(eq(teams.classId, id)); await db.delete(classes).where(eq(classes.id, id)); }
 export async function deleteTeam(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.update(students).set({ teamId: null }).where(eq(students.teamId, id)); await db.delete(activities).where(eq(activities.teamId, id)); await db.delete(teams).where(eq(teams.id, id)); }
 export async function deleteStudent(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.delete(attendance).where(eq(attendance.studentId, id)); await db.delete(grades).where(eq(grades.studentId, id)); await db.delete(activities).where(eq(activities.studentId, id)); await db.delete(students).where(eq(students.id, id)); }
-export async function saveAttendance(input: { studentId: number; date: string; status: "present" | "absent" | "late" | "excused"; note?: string }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const existing = await db.select().from(attendance).where(and(eq(attendance.studentId, input.studentId), eq(attendance.date, input.date))).limit(1); if (existing.length > 0) return existing[0]; return db.transaction(async tx => { await tx.insert(attendance).values(input); if (input.status === "absent") { const row = await tx.select({ teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); await tx.insert(activities).values({ studentId: input.studentId, teamId: row[0]?.teamId ?? null, date: input.date, title: input.note?.trim() ? `غیبت — ${input.note.trim()}` : "غیبت", kind: "negative", points: -3 }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - 3` }).where(eq(students.id, input.studentId)); if (row[0]?.teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - 3` }).where(eq(teams.id, row[0].teamId)); } return input; }); }
+export async function saveAttendance(input: { studentId: number; date: string; status: "present" | "absent" | "late" | "excused"; note?: string }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const stu = await db.select({ schoolId: students.schoolId }).from(students).where(eq(students.id, input.studentId)).limit(1); const existing = await db.select().from(attendance).where(and(eq(attendance.studentId, input.studentId), eq(attendance.date, input.date))).limit(1); if (existing.length > 0) return existing[0]; return db.transaction(async tx => { await tx.insert(attendance).values({ ...input, schoolId: stu[0]?.schoolId ?? null }); if (input.status === "absent") { const row = await tx.select({ teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); await tx.insert(activities).values({ studentId: input.studentId, teamId: row[0]?.teamId ?? null, date: input.date, title: input.note?.trim() ? `غیبت — ${input.note.trim()}` : "غیبت", kind: "negative", points: -3, schoolId: stu[0]?.schoolId ?? null }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - 3` }).where(eq(students.id, input.studentId)); if (row[0]?.teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - 3` }).where(eq(teams.id, row[0].teamId)); } return input; }); }
 export async function createSubject(input: { classId: number; name: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const name = normFa(input.name);
+  const cls = await db.select({ schoolId: classes.schoolId }).from(classes).where(eq(classes.id, input.classId)).limit(1);
   await assertNoDuplicate(db, subjects, and(eq(subjects.classId, input.classId), dupClause(subjects.name, name)), `در این کلاس درسی با نام «${name}» قبلاً ثبت شده است`);
-  await db.insert(subjects).values({ ...input, name });
+  await db.insert(subjects).values({ ...input, name, schoolId: cls[0]?.schoolId ?? null });
 }
 export async function updateSubject(input: { id: number; classId: number; name: string }) {
   const db = await getDb();
@@ -152,31 +156,48 @@ export async function updateSubject(input: { id: number; classId: number; name: 
   await db.update(subjects).set({ classId: input.classId, name }).where(eq(subjects.id, input.id));
 }
 export async function deleteSubject(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.update(grades).set({ subjectId: null }).where(eq(grades.subjectId, id)); await db.delete(subjects).where(eq(subjects.id, id)); }
-export async function saveGrade(input: { studentId: number; subjectId?: number | null; gradeType: "class" | "midterm" | "final"; title: string; score: number; maxScore: number; date: string; note?: string }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.insert(grades).values(input); }
+export async function saveGrade(input: { studentId: number; subjectId?: number | null; gradeType: "class" | "midterm" | "final"; title: string; score: number; maxScore: number; date: string; note?: string }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const stu = await db.select({ schoolId: students.schoolId }).from(students).where(eq(students.id, input.studentId)).limit(1); await db.insert(grades).values({ ...input, schoolId: stu[0]?.schoolId ?? null }); }
 export async function updateGrade(input: { id: number; studentId: number; subjectId?: number | null; gradeType: "class" | "midterm" | "final"; title: string; score: number; maxScore: number; date: string; note?: string }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.update(grades).set({ studentId: input.studentId, subjectId: input.subjectId, gradeType: input.gradeType, title: input.title, score: input.score, maxScore: input.maxScore, date: input.date, note: input.note }).where(eq(grades.id, input.id)); }
 export async function deleteGrade(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.delete(grades).where(eq(grades.id, id)); }
-export async function saveStudentActivity(input: { studentId: number; date: string; title: string; description?: string; kind: "positive" | "negative" | "neutral"; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.transaction(async tx => { await tx.insert(activities).values({ studentId: input.studentId, teamId: null, date: input.date, title: input.title, description: input.description, kind: input.kind, points: input.points }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} + ${input.points}` }).where(eq(students.id, input.studentId)); const s = await tx.select({ teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); if (s[0]?.teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} + ${input.points}` }).where(eq(teams.id, s[0].teamId)); }); }
-export async function saveTeamActivity(input: { teamId: number; date: string; title: string; description?: string; kind: "positive" | "negative" | "neutral"; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.transaction(async tx => { const members = await tx.select({ id: students.id }).from(students).where(eq(students.teamId, input.teamId)); await tx.insert(activities).values({ studentId: null, teamId: input.teamId, date: input.date, title: input.title, description: input.description, kind: input.kind, points: input.points }); await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} + ${input.points}` }).where(eq(teams.id, input.teamId)); const shares = distributeTeamPoints(input.points, members.length); for (let index = 0; index < members.length; index++) { const member = members[index]; const share = shares[index] ?? 0; if (share) await tx.update(students).set({ totalPoints: sql`${students.totalPoints} + ${share}` }).where(eq(students.id, member.id)); } }); }
-export async function consumeStudentPoints(input: { studentId: number; date: string; description: string; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const amount = Math.abs(input.points); return db.transaction(async tx => { const row = await tx.select({ totalPoints: students.totalPoints, teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); if (!row[0] || row[0].totalPoints < amount) throw new Error("مانده امتیاز دانش‌آموز کافی نیست"); await tx.insert(activities).values({ studentId: input.studentId, teamId: null, date: input.date, title: "مصرف امتیاز", description: input.description, kind: "negative", points: -amount }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - ${amount}` }).where(eq(students.id, input.studentId)); if (row[0].teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${amount}` }).where(eq(teams.id, row[0].teamId)); }); }
-export async function consumeTeamPoints(input: { teamId: number; date: string; description: string; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const amount = Math.abs(input.points); return db.transaction(async tx => { const team = await tx.select({ totalPoints: teams.totalPoints }).from(teams).where(eq(teams.id, input.teamId)).limit(1); if (!team[0] || team[0].totalPoints < amount) throw new Error("مانده امتیاز تیم کافی نیست"); const members = await tx.select({ id: students.id }).from(students).where(eq(students.teamId, input.teamId)); await tx.insert(activities).values({ studentId: null, teamId: input.teamId, date: input.date, title: "مصرف امتیاز", description: input.description, kind: "negative", points: -amount }); await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${amount}` }).where(eq(teams.id, input.teamId)); const shares = distributeTeamPoints(-amount, members.length); for (let index = 0; index < members.length; index++) { const share = shares[index] ?? 0; if (share) await tx.update(students).set({ totalPoints: sql`${students.totalPoints} + ${share}` }).where(eq(students.id, members[index].id)); } }); }
+export async function saveStudentActivity(input: { studentId: number; date: string; title: string; description?: string; kind: "positive" | "negative" | "neutral"; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const stu = await db.select({ schoolId: students.schoolId }).from(students).where(eq(students.id, input.studentId)).limit(1); await db.transaction(async tx => { await tx.insert(activities).values({ studentId: input.studentId, teamId: null, date: input.date, title: input.title, description: input.description, kind: input.kind, points: input.points, schoolId: stu[0]?.schoolId ?? null }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} + ${input.points}` }).where(eq(students.id, input.studentId)); const s = await tx.select({ teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); if (s[0]?.teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} + ${input.points}` }).where(eq(teams.id, s[0].teamId)); }); }
+export async function saveTeamActivity(input: { teamId: number; date: string; title: string; description?: string; kind: "positive" | "negative" | "neutral"; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.transaction(async tx => { const members = await tx.select({ id: students.id }).from(students).where(eq(students.teamId, input.teamId)); const team = await tx.select({ schoolId: teams.schoolId }).from(teams).where(eq(teams.id, input.teamId)).limit(1); await tx.insert(activities).values({ studentId: null, teamId: input.teamId, date: input.date, title: input.title, description: input.description, kind: input.kind, points: input.points, schoolId: team[0]?.schoolId ?? null }); await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} + ${input.points}` }).where(eq(teams.id, input.teamId)); const shares = distributeTeamPoints(input.points, members.length); for (let index = 0; index < members.length; index++) { const member = members[index]; const share = shares[index] ?? 0; if (share) await tx.update(students).set({ totalPoints: sql`${students.totalPoints} + ${share}` }).where(eq(students.id, member.id)); } }); }
+export async function consumeStudentPoints(input: { studentId: number; date: string; description: string; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const amount = Math.abs(input.points); return db.transaction(async tx => { const row = await tx.select({ totalPoints: students.totalPoints, teamId: students.teamId, schoolId: students.schoolId }).from(students).where(eq(students.id, input.studentId)).limit(1); if (!row[0] || row[0].totalPoints < amount) throw new Error("مانده امتیاز دانش‌آموز کافی نیست"); await tx.insert(activities).values({ studentId: input.studentId, teamId: null, date: input.date, title: "مصرف امتیاز", description: input.description, kind: "negative", points: -amount, schoolId: row[0]?.schoolId ?? null }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - ${amount}` }).where(eq(students.id, input.studentId)); if (row[0].teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${amount}` }).where(eq(teams.id, row[0].teamId)); }); }
+export async function consumeTeamPoints(input: { teamId: number; date: string; description: string; points: number }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const amount = Math.abs(input.points); return db.transaction(async tx => { const team = await tx.select({ totalPoints: teams.totalPoints }).from(teams).where(eq(teams.id, input.teamId)).limit(1); if (!team[0] || team[0].totalPoints < amount) throw new Error("مانده امتیاز تیم کافی نیست"); const members = await tx.select({ id: students.id }).from(students).where(eq(students.teamId, input.teamId)); await tx.insert(activities).values({ studentId: null, teamId: input.teamId, date: input.date, title: "مصرف امتیاز", description: input.description, kind: "negative", points: -amount, schoolId: team[0]?.schoolId ?? null }); await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${amount}` }).where(eq(teams.id, input.teamId)); const shares = distributeTeamPoints(-amount, members.length); for (let index = 0; index < members.length; index++) { const share = shares[index] ?? 0; if (share) await tx.update(students).set({ totalPoints: sql`${students.totalPoints} + ${share}` }).where(eq(students.id, members[index].id)); } }); }
 export async function saveActivity(input: { studentId: number; date: string; title: string; description?: string; kind: "positive" | "negative" | "neutral"; points: number }) { return saveStudentActivity(input); }
 
 // --- Public (no-login) read-only view for visitors ----------------------------
 // Only exposes: class list, student names + current points, and student activities.
 // Never exposes: attendance, grades, phones/codes, users, school internals.
-export async function getPublicClasses() {
+export async function getPublicClasses(schoolCode?: string) {
   const db = await getDb();
   if (!db) return { schoolName: "", classes: [] as { id: number; name: string; studentCount: number }[] };
-  const [schoolRows, classRows, studentRows] = await Promise.all([
-    db.select({ name: schools.name }).from(schools).limit(1),
-    db.select({ id: classes.id, name: classes.name }).from(classes),
+  let schoolName = "";
+  if (schoolCode) {
+    const sRows = await db.select({ name: schools.name }).from(schools).where(eq(schools.code, schoolCode.toUpperCase())).limit(1);
+    schoolName = sRows[0]?.name ?? "";
+  } else {
+    const sRows = await db.select({ name: schools.name }).from(schools).where(eq(schools.status, "active")).orderBy(asc(schools.id)).limit(1);
+    schoolName = sRows[0]?.name ?? "دفترکلاس";
+  }
+  const [classRows, studentRows] = await Promise.all([
+    db.select({ id: classes.id, name: classes.name, schoolId: classes.schoolId }).from(classes),
     db.select({ classId: students.classId }).from(students),
   ]);
+  // فیلتر کلاس‌ها بر اساس مدرسه انتخابی (کد مدرسه یا نخستین مدرسه فعال)
+  let schoolIdFilter: number | null = null;
+  if (schoolCode) {
+    const sId = await db.select({ id: schools.id }).from(schools).where(eq(schools.code, schoolCode.toUpperCase())).limit(1);
+    schoolIdFilter = sId[0]?.id ?? null;
+  } else {
+    const sId = await db.select({ id: schools.id }).from(schools).where(eq(schools.status, "active")).orderBy(asc(schools.id)).limit(1);
+    schoolIdFilter = sId[0]?.id ?? null;
+  }
+  const filtered = schoolIdFilter != null ? classRows.filter(c => c.schoolId === schoolIdFilter) : classRows;
   const counts = new Map<number, number>();
   for (const s of studentRows) counts.set(s.classId, (counts.get(s.classId) ?? 0) + 1);
   return {
-    schoolName: schoolRows[0]?.name ?? "دفترکلاس",
-    classes: classRows.map(c => ({ id: c.id, name: c.name, studentCount: counts.get(c.id) ?? 0 })),
+    schoolName,
+    classes: filtered.map(c => ({ id: c.id, name: c.name, studentCount: counts.get(c.id) ?? 0 })),
   };
 }
 
@@ -227,13 +248,14 @@ function ensureLoginTable(conn: ReturnType<typeof connect>) {
   if (!_loginTableReady) _loginTableReady = conn.execute("CREATE TABLE IF NOT EXISTS login_attempts (key_name VARCHAR(64) PRIMARY KEY, failed_count INT NOT NULL DEFAULT 0, locked_until_ms BIGINT NOT NULL DEFAULT 0)");
   return _loginTableReady;
 }
+// v2: کلید قفل پارامتری است — هر «کد مدرسه + نام کاربری» قفل مستقل دارد (و سوپرادمین کلید خودش)
 export type LoginLockState = { locked: boolean; remainingSeconds: number; failedCount: number; maxAttempts: number };
 const noLock = (): LoginLockState => ({ locked: false, remainingSeconds: 0, failedCount: 0, maxAttempts: LOGIN_MAX_ATTEMPTS });
-export async function getLoginLockState(): Promise<LoginLockState> {
+export async function getLoginLockState(key: string = "admin"): Promise<LoginLockState> {
   const conn = getRawConn();
   if (!conn) return noLock();
   await ensureLoginTable(conn);
-  const res: any = await conn.execute("SELECT failed_count, locked_until_ms FROM login_attempts WHERE key_name = ?", [LOGIN_KEY]);
+  const res: any = await conn.execute("SELECT failed_count, locked_until_ms FROM login_attempts WHERE key_name = ?", [key]);
   const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
   const now = Date.now();
   const lockedUntil = Number(row?.locked_until_ms ?? 0);
@@ -243,22 +265,22 @@ export async function getLoginLockState(): Promise<LoginLockState> {
   const failedCount = remainingSeconds > 0 || !expired ? Number(row?.failed_count ?? 0) : 0;
   return { locked: remainingSeconds > 0, remainingSeconds, failedCount, maxAttempts: LOGIN_MAX_ATTEMPTS };
 }
-export async function registerLoginFailure(): Promise<LoginLockState> {
+export async function registerLoginFailure(key: string = "admin"): Promise<LoginLockState> {
   const conn = getRawConn();
   if (!conn) return noLock();
   await ensureLoginTable(conn);
-  const current = await getLoginLockState();
+  const current = await getLoginLockState(key);
   if (current.locked) return current;
   const failed = current.failedCount + 1; // expired lock already reports failedCount=0 → fresh start
   const lockUntil = failed >= LOGIN_MAX_ATTEMPTS ? Date.now() + LOGIN_LOCK_MS : 0;
-  await conn.execute("INSERT INTO login_attempts (key_name, failed_count, locked_until_ms) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE failed_count = VALUES(failed_count), locked_until_ms = VALUES(locked_until_ms)", [LOGIN_KEY, failed, lockUntil]);
+  await conn.execute("INSERT INTO login_attempts (key_name, failed_count, locked_until_ms) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE failed_count = VALUES(failed_count), locked_until_ms = VALUES(locked_until_ms)", [key, failed, lockUntil]);
   return { locked: lockUntil > 0, remainingSeconds: lockUntil > 0 ? Math.ceil((lockUntil - Date.now()) / 1000) : 0, failedCount: failed, maxAttempts: LOGIN_MAX_ATTEMPTS };
 }
-export async function resetLoginFailures(): Promise<void> {
+export async function resetLoginFailures(key: string = "admin"): Promise<void> {
   const conn = getRawConn();
   if (!conn) return;
   await ensureLoginTable(conn);
-  await conn.execute("DELETE FROM login_attempts WHERE key_name = ?", [LOGIN_KEY]);
+  await conn.execute("DELETE FROM login_attempts WHERE key_name = ?", [key]);
 }
 
 // --- Telegram referral (affiliate) system ------------------------------------
@@ -483,12 +505,13 @@ export async function claimReferralLeave(tgUserId: number): Promise<ReferralLeav
   };
 }
 
-export async function listReferrals(): Promise<ReferralStatRow[]> {
+export async function listReferrals(schoolId: number | null = null): Promise<ReferralStatRow[]> {
   const conn = getRawConn();
   if (!conn) return [];
   await ensureReferralTables(conn);
+  const scope = schoolId != null ? "WHERE s.schoolId = " + Number(schoolId) : "";
   const res: any = await conn.execute(
-    "SELECT r.id, r.student_id, r.code, r.invite_link, r.created_at, s.firstName, s.lastName, c.name AS class_name, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id) AS join_count, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id AND j.status = 'left') AS leave_count FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId ORDER BY join_count DESC, r.id ASC"
+    "SELECT r.id, r.student_id, r.code, r.invite_link, r.created_at, s.firstName, s.lastName, c.name AS class_name, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id) AS join_count, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id AND j.status = 'left') AS leave_count FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId " + scope + " ORDER BY join_count DESC, r.id ASC"
   );
   const rows = (Array.isArray(res) ? res : res.rows) ?? [];
   return rows.map((row: any) => ({ id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link ?? ""), createdAt: Number(row.created_at ?? 0), joinCount: Number(row.join_count ?? 0), leaveCount: Number(row.leave_count ?? 0) }));
@@ -499,14 +522,15 @@ export async function listReferrals(): Promise<ReferralStatRow[]> {
 export type ReferralReportJoin = { telegramUserId: number; telegramName: string | null; joinedAt: number; status: string };
 export type ReferralReportRow = ReferralStatRow & { telegramUserId: number | null; telegramUsername: string | null; telegramChatId: number | null; joins: ReferralReportJoin[] };
 export type ReferralNoLinkStudent = { id: number; firstName: string; lastName: string; className: string | null };
-export async function getReferralReport(): Promise<{ referrals: ReferralReportRow[]; noLinkStudents: ReferralNoLinkStudent[]; generatedAt: number }> {
+export async function getReferralReport(schoolId: number | null = null): Promise<{ referrals: ReferralReportRow[]; noLinkStudents: ReferralNoLinkStudent[]; generatedAt: number }> {
   const conn = getRawConn();
   if (!conn) return { referrals: [], noLinkStudents: [], generatedAt: Date.now() };
   await ensureReferralTables(conn);
+  const scope = schoolId != null ? "WHERE s.schoolId = " + Number(schoolId) : "";
   const res: any = await conn.execute(
-    "SELECT r.id, r.student_id, r.code, r.invite_link, r.telegram_user_id, r.telegram_username, r.telegram_chat_id, r.created_at, s.firstName, s.lastName, c.name AS class_name, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id) AS join_count, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id AND j.status = 'left') AS leave_count FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId ORDER BY join_count DESC, r.id ASC"
+    "SELECT r.id, r.student_id, r.code, r.invite_link, r.telegram_user_id, r.telegram_username, r.telegram_chat_id, r.created_at, s.firstName, s.lastName, c.name AS class_name, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id) AS join_count, (SELECT COUNT(*) FROM referral_joins j WHERE j.referral_id = r.id AND j.status = 'left') AS leave_count FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId " + scope + " ORDER BY join_count DESC, r.id ASC"
   );
-  const jres: any = await conn.execute("SELECT referral_id, telegram_user_id, telegram_name, joined_at, status FROM referral_joins ORDER BY joined_at ASC, id ASC");
+  const jres: any = await conn.execute("SELECT j.referral_id, j.telegram_user_id, j.telegram_name, j.joined_at, j.status FROM referral_joins j JOIN referrals r ON r.id = j.referral_id JOIN students s ON s.id = r.student_id " + (schoolId != null ? "WHERE s.schoolId = " + Number(schoolId) : "") + " ORDER BY j.joined_at ASC, j.id ASC");
   const joinsByRef = new Map<number, ReferralReportJoin[]>();
   for (const j of ((Array.isArray(jres) ? jres : jres.rows) ?? [])) {
     const rid = Number(j.referral_id);
@@ -530,7 +554,7 @@ export async function getReferralReport(): Promise<{ referrals: ReferralReportRo
     joins: joinsByRef.get(Number(row.id)) ?? [],
   }));
   const nres: any = await conn.execute(
-    "SELECT s.id, s.firstName, s.lastName, c.name AS class_name FROM students s LEFT JOIN referrals r ON r.student_id = s.id LEFT JOIN classes c ON c.id = s.classId WHERE r.id IS NULL ORDER BY c.name ASC, s.firstName ASC, s.lastName ASC LIMIT 500"
+    "SELECT s.id, s.firstName, s.lastName, c.name AS class_name FROM students s LEFT JOIN referrals r ON r.student_id = s.id LEFT JOIN classes c ON c.id = s.classId WHERE r.id IS NULL" + (schoolId != null ? " AND s.schoolId = " + Number(schoolId) : "") + " ORDER BY c.name ASC, s.firstName ASC, s.lastName ASC LIMIT 500"
   );
   const noLinkStudents = ((Array.isArray(nres) ? nres : nres.rows) ?? []).map((row: any) => ({ id: Number(row.id), firstName: String(row.firstName), lastName: String(row.lastName), className: row.class_name ?? null }));
   return { referrals, noLinkStudents, generatedAt: Date.now() };
