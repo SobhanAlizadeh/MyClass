@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
+import { useLocation } from "wouter";
 
 type Theme = "light" | "dark";
 
@@ -21,6 +22,9 @@ export function ThemeProvider({
   defaultTheme = "light",
   switchable = false,
 }: ThemeProviderProps) {
+  const [location] = useLocation();
+  // صفحات تیره پلتفرم (پنل سوپرادمین /super) همیشه تم تیره می‌گیرند — مستقل از تم ذخیره‌شده اپ مدرسه
+  const forcedDark = location.startsWith("/super");
   const [theme, setTheme] = useState<Theme>(() => {
     if (switchable) {
       const stored = localStorage.getItem("theme");
@@ -31,16 +35,17 @@ export function ThemeProvider({
 
   useEffect(() => {
     const root = document.documentElement;
-    if (theme === "dark") {
+    const effective = forcedDark ? "dark" : theme;
+    if (effective === "dark") {
       root.classList.add("dark");
     } else {
       root.classList.remove("dark");
     }
 
-    if (switchable) {
+    if (switchable && !forcedDark) {
       localStorage.setItem("theme", theme);
     }
-  }, [theme, switchable]);
+  }, [theme, switchable, forcedDark]);
 
   const toggleTheme = switchable
     ? () => {

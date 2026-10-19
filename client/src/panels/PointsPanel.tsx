@@ -7,6 +7,7 @@ import { today, Kind, GradeType, gradeTypeLabels } from "./shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
@@ -14,7 +15,7 @@ import { toast } from "sonner";
 import { formatJalali, formatJalaliShort } from "@/lib/jalali";
 import { buildReportPrintHtml, printHtmlInIframe, type PrintActivity } from "@/lib/print-report";
 import { JalaliDatePicker, Field, Stat, StudentSelect, TeamSelect, QuickButton, Empty, gradeTypeLabels } from "./shared";
-import { Check, ClipboardList, Edit3, Medal, Printer, Send, Settings2, Share2, Sparkles, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
+import { Check, ClipboardList, Edit3, Medal, Plus, Printer, Send, Settings2, Share2, Sparkles, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
 export function PointsPanel({ ctx }: { ctx: any }) {
