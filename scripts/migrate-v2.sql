@@ -62,3 +62,11 @@ UPDATE referrals r JOIN students s ON r.student_id = s.id SET r.school_id = s.sc
 ALTER TABLE schools ADD UNIQUE INDEX IF NOT EXISTS uq_schools_code (code);
 ALTER TABLE users ADD INDEX IF NOT EXISTS idx_users_school_username (schoolId, username);
 ALTER TABLE schools ADD INDEX IF NOT EXISTS idx_schools_status (status);
+
+-- 7) phase 4: parents (parent access code) + white-label (logo/color)
+ALTER TABLE students ADD COLUMN IF NOT EXISTS parentName VARCHAR(120) NULL;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS parentPhone VARCHAR(30) NULL;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS parentCode VARCHAR(24) NULL;
+ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS logo_data TEXT NULL;
+ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS primary_color VARCHAR(20) NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_students_parent_code ON students(parentCode);

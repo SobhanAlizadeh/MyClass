@@ -8,11 +8,13 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Edit3, CalendarRange, GraduationCap, Layers, Plus, School as SchoolIcon, Trash2, UserCog, Users2 } from "lucide-react";
+import { Edit3, CalendarRange, GraduationCap, Layers, Plus, School as SchoolIcon, Sheet, Trash2, UserCog, Users2 } from "lucide-react";
 import { Empty, SearchInput, matchesQuery } from "./shared";
 import { SubjectPanel } from "./SubjectPanel";
 import { UsersManager } from "./UsersManager";
 import { AcademicPanel } from "./AcademicPanel";
+import { ParentsBox } from "./ParentsBox";
+import { exportSchoolWorkbook } from "@/lib/excel";
 
 type SubTab = "classes" | "subjects" | "teams" | "students" | "academic" | "users";
 const SUBTABS: Array<{ key: SubTab; label: string; icon: any }> = [
@@ -27,8 +29,23 @@ const SUBTABS: Array<{ key: SubTab; label: string; icon: any }> = [
 export function ManagementPanel({ ctx, role }: { ctx: any; role?: string }) {
   const [tab, setTab] = useState<SubTab>("classes");
   const [q, setQ] = useState("");
+  const [exporting, setExporting] = useState(false);
   const switchTab = (next: SubTab) => { setTab(next); setQ(""); };
   const { classes, teams, students } = ctx;
+
+  const runExcelExport = async () => {
+    setExporting(true);
+    try {
+      const result = await exportSchoolWorkbook({
+        schoolName: ctx.schools?.[0]?.name ?? "دفترکلاس",
+        students, classes, teams,
+        grades: ctx.grades ?? [], subjects: ctx.subjects ?? [], attendance: ctx.attendance ?? [],
+      });
+      toast.success(`فایل اکسل ساخته شد — ${result.studentCount} دانش‌آموز، ${result.gradeCount} نمره، ${result.attendanceCount} رکورد حضور`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "خروجی اکسل ناموفق بود");
+    } finally { setExporting(false); }
+  };
 
   const startEdit = (type: "class" | "team" | "student", row: any, label: string) => ctx.startEdit(type, row.id, label, row);
   const deleteRow = (type: "class" | "team" | "student", row: any, label: string) => ctx.confirmDelete(label, () => (type === "class" ? ctx.deleteClass.mutate({ id: row.id }) : type === "team" ? ctx.deleteTeam.mutate({ id: row.id }) : ctx.deleteStudent.mutate({ id: row.id })));
@@ -122,16 +139,18 @@ export function ManagementPanel({ ctx, role }: { ctx: any; role?: string }) {
                 <Select value={ctx.studentTeamId} onValueChange={ctx.setStudentTeamId}><SelectTrigger><SelectValue placeholder="تیم" /></SelectTrigger><SelectContent><SelectItem value="none">بدون تیم</SelectItem>{studentTeams.map((t: any) => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent></Select>
                 <Button onClick={ctx.submitStudent} variant="outline" className="shrink-0">ثبت <Plus className="mr-1 h-4 w-4" /></Button>
               </div>
-              <div className="flex items-center justify-between gap-3 flex-wrap"><SearchInput value={q} onChange={setQ} placeholder="جست‌وجوی نام/کلاس/تیم…" /><Badge variant="outline" className="border-slate-200 text-slate-600">{rows.length} دانش‌آموز</Badge></div>
+              <div className="flex items-center justify-between gap-3 flex-wrap"><SearchInput value={q} onChange={setQ} placeholder="جست‌وجوی نام/کلاس/تیم…" /><div className="flex items-center gap-2"><Badge variant="outline" className="border-slate-200 text-slate-600">{rows.length} دانش‌آموز</Badge><Button size="sm" variant="outline" onClick={() => void runExcelExport()} disabled={exporting} title="خروجی اکسل کامل (دانش‌آموزان + نمرات + حضور)"><Sheet className="h-4 w-4 ml-1" /> {exporting ? "در حال ساخت…" : "خروجی اکسل"}</Button></div></div>
               {rows.length === 0 ? <Empty text={students.length === 0 ? "هنوز دانش‌آموزی ثبت نشده است" : "نتیجه‌ای برای این جست‌وجو نیست"} /> : (
                 <div className="space-y-2">{rows.map((row: any) => (
                   <div key={row.id} className="flex items-center gap-2 bg-slate-50 rounded-lg p-2.5 text-sm">
                     {editControls("student", row, `${row.firstName} ${row.lastName}`)}
                     <Badge variant="outline" className="border-slate-200 text-slate-500 shrink-0">{classes.find((c: any) => c.id === row.classId)?.name ?? "بدون کلاس"}</Badge>
                     {row.teamId && <Badge variant="outline" className="border-slate-200 text-slate-500 shrink-0">تیم {teams.find((t: any) => t.id === row.teamId)?.name ?? "—"}</Badge>}
+                    {row.parentName && <Badge variant="outline" className="border-amber-200 text-amber-700 shrink-0" title={`والد: ${row.parentName}${row.parentPhone ? ` — ${row.parentPhone}` : ""}`}>والد ثبت شده</Badge>}
                   </div>
                 ))}</div>
               )}
+              <ParentsBox ctx={ctx} />
             </CardContent></Card>
         );
       })()}

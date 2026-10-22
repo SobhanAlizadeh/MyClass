@@ -1,5 +1,6 @@
 // Standalone report print documents — verbatim move from Home.tsx (v2 refactor).
 import { formatJalali, formatJalaliShort } from "@/lib/jalali";
+import type { StudentReportCard } from "@shared/report-card";
 
 // ---------- چاپ مستقل گزارش ----------
 // سند چاپ کاملاً مستقل ساخته می‌شود (HTML با استایل inline) و داخل یک iframe مخفی چاپ می‌شود.
@@ -157,6 +158,98 @@ const printHtmlInIframe = (html: string) => {
     }, 250);
   };
   document.body.appendChild(frame);
+};
+
+// ---------- فاز ۴: چاپ کارنامه دانش‌آموز ----------
+// A4 با سربرگ مدرسه (لوگوی وایت‌لیبل اگر باشد)، جدول درس‌ها با میانگین نرمال‌شده روی ۲۰،
+// خلاصه حضور و غیاب (روزانه + زنگی)، خلاصه امتیاز و فعالیت‌های اخیر.
+const fmt20 = (v: number | null | undefined) => (v == null ? "—" : String(Math.round(v * 100) / 100));
+
+export const buildReportCardPrintHtml = (input: {
+  schoolName: string;
+  printDate: string;
+  card: StudentReportCard;
+  logoData?: string | null;
+  primaryColor?: string | null;
+  footerNote?: string;
+}) => {
+  const { card } = input;
+  const accent = input.primaryColor || "#0f766e";
+  const logoBlock = input.logoData
+    ? `<img src="${input.logoData}" alt="لوگو" class="logo" />`
+    : "";
+  const student = card.student;
+  const infoCells = [
+    { k: "دانش‌آموز", v: `${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}` },
+    { k: "کلاس", v: escapeHtml(card.className ?? "—") },
+    { k: "تیم", v: escapeHtml(card.teamName ?? "بدون تیم") },
+    ...(card.academicYearTitle ? [{ k: "سال تحصیلی", v: escapeHtml(card.academicYearTitle) }] : []),
+    ...(student.studentCode ? [{ k: "شماره دانش‌آموزی", v: escapeHtml(student.studentCode) }] : []),
+    ...(student.parentName ? [{ k: "والد", v: `${escapeHtml(student.parentName)}${student.parentPhone ? ` — ${escapeHtml(student.parentPhone)}` : ""}` }] : []),
+  ];
+  const subjectRows = card.subjects.length === 0
+    ? `<tr><td colspan="6" style="text-align:center;color:#64748b;padding:14px;">هنوز نمره‌ای ثبت نشده است</td></tr>`
+    : card.subjects.map((s, i) => `<tr><td>${i + 1}</td><td><b>${escapeHtml(s.subjectName)}</b></td><td>${fmt20(s.classAvg)}</td><td>${fmt20(s.midtermAvg)}</td><td>${fmt20(s.finalAvg)}</td><td class="${s.overallAvg != null ? (s.overallAvg >= 10 ? "pos" : "neg") : ""}"><b>${fmt20(s.overallAvg)}</b> <span class="muted">(${s.gradeCount} نمره)</span></td></tr>`).join("");
+  const subjectAvgs = card.subjects.map(s => s.overallAvg).filter((v): v is number => v != null);
+  const totalAvg = subjectAvgs.length ? Math.round((subjectAvgs.reduce((a, b) => a + b, 0) / subjectAvgs.length) * 100) / 100 : null;
+  const att = card.attendance;
+  const attRows = [
+    { k: "حاضر", v: String(att.present) },
+    { k: "غیبت (روزانه)", v: String(att.absent) },
+    { k: "تأخیر", v: String(att.late) },
+    { k: "غیبت موجه", v: String(att.excused) },
+    { k: "غیبت زنگی", v: `${att.absentPeriods} زنگ` },
+    { k: "درصد حضور", v: `${att.presentRate}٪` },
+  ];
+  const activityRows = card.activities.length === 0
+    ? `<tr><td colspan="4" style="text-align:center;color:#64748b;padding:14px;">فعالیتی ثبت نشده است</td></tr>`
+    : card.activities.slice(0, 30).map((a, i) => `<tr><td>${i + 1}</td><td><b>${escapeHtml(a.title)}</b>${a.description ? `<div class="muted">${escapeHtml(a.description)}</div>` : ""}</td><td>${escapeHtml(formatJalaliShort(a.date))}</td><td class="${a.points >= 0 ? "pos" : "neg"}">${a.points >= 0 ? "+" : ""}${a.points}</td></tr>`).join("");
+  return `<!DOCTYPE html>
+<html dir="rtl" lang="fa"><head><meta charset="utf-8"><title>کارنامه ${escapeHtml(student.firstName)} ${escapeHtml(student.lastName)}</title><style>
+@page { size: A4; margin: 12mm; }
+* { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+html, body { background: #ffffff; color: #0f172a; font-family: Tahoma, "Segoe UI", "Vazirmatn", "Noto Sans Arabic", sans-serif; margin: 0; padding: 0; }
+.wrap { padding: 6px 2px; }
+.head { text-align: center; border-bottom: 3px solid ${accent}; padding-bottom: 10px; margin-bottom: 12px; }
+.head .logo { height: 58px; width: 58px; object-fit: contain; margin-bottom: 6px; }
+.head h1 { margin: 0; font-size: 19px; color: #0f172a; }
+.head h2 { margin: 4px 0 0; font-size: 14px; color: ${accent}; }
+.head .sub { color: #475569; font-size: 11.5px; margin-top: 4px; }
+h3 { font-size: 13.5px; margin: 14px 0 8px; color: #0f172a; border-right: 3px solid ${accent}; padding-right: 8px; }
+.info { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.info .cell { flex: 1 1 160px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 7px 10px; background: #f8fafc; }
+.info .k { color: #64748b; font-size: 10.5px; }
+.info .v { font-size: 13px; font-weight: bold; margin-top: 2px; color: #0f172a; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 6px; }
+th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: right; vertical-align: top; }
+th { background: ${accent}; color: #ffffff; }
+tbody tr:nth-child(even) { background: #f8fafc; }
+tr { break-inside: avoid; page-break-inside: avoid; }
+.pos { color: #047857; font-weight: bold; white-space: nowrap; }
+.neg { color: #b91c1c; font-weight: bold; white-space: nowrap; }
+.muted { color: #64748b; font-size: 10.5px; font-weight: normal; }
+.totalavg { border: 1px solid #cbd5e1; border-radius: 10px; background: #f8fafc; padding: 8px 12px; margin-top: 4px; font-size: 13px; }
+.totalavg b.big { font-size: 17px; color: ${accent}; }
+.foot { margin-top: 16px; text-align: center; color: #64748b; font-size: 10.5px; border-top: 1px solid #cbd5e1; padding-top: 8px; display: flex; justify-content: space-between; }
+</style></head><body><div class="wrap">
+<div class="head">${logoBlock}<h1>${escapeHtml(input.schoolName)}</h1><h2>کارنامه تحصیلی و انضباطی</h2><p class="sub">تاریخ چاپ: ${escapeHtml(input.printDate)} · تهیه‌شده با سامانه دفترکلاس</p></div>
+<div class="info">${infoCells.map(c => `<div class="cell"><div class="k">${c.k}</div><div class="v">${c.v}</div></div>`).join("")}</div>
+<h3>نمرات درس‌ها (میانگین روی ۲۰)</h3>
+<table><thead><tr><th style="width:34px;">#</th><th>درس</th><th style="width:95px;">امتحان کلاسی</th><th style="width:80px;">میان‌ترم</th><th style="width:85px;">پایان‌ترم</th><th style="width:120px;">میانگین کل</th></tr></thead><tbody>${subjectRows}</tbody></table>
+${totalAvg != null ? `<div class="totalavg">میانگین عمومی کل درس‌ها: <b class="big">${fmt20(totalAvg)}</b> از ۲۰</div>` : ""}
+<h3>حضور و غیاب</h3>
+<div class="info">${attRows.map(c => `<div class="cell"><div class="k">${c.k}</div><div class="v">${c.v}</div></div>`).join("")}</div>
+<h3>امتیاز و انضباط</h3>
+<div class="info">
+<div class="cell"><div class="k">امتیاز فعلی</div><div class="v">${card.points.total >= 0 ? "+" : ""}${card.points.total}</div></div>
+<div class="cell"><div class="k">جمع امتیازهای مثبت</div><div class="v pos">+${card.points.positive}</div></div>
+<div class="cell"><div class="k">جمع منفی/مصرف</div><div class="v neg">−${card.points.negative}</div></div>
+<div class="cell"><div class="k">تعداد فعالیت‌ها</div><div class="v">${card.points.count}</div></div>
+</div>
+<h3>فعالیت‌های اخیر</h3>
+<table><thead><tr><th style="width:34px;">#</th><th>فعالیت</th><th style="width:95px;">تاریخ</th><th style="width:70px;">امتیاز</th></tr></thead><tbody>${activityRows}</tbody></table>
+<div class="foot"><span>${escapeHtml(input.footerNote ?? "این کارنامه به‌صورت خودکار از سامانه دفترکلاس تولید شده است")}</span><span>امضای مدیر: ..................</span></div>
+</div></body></html>`;
 };
 
 

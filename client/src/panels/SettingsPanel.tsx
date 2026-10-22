@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, Info, RefreshCw, School, Send, Unplug, XCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { BrandingCard } from "./BrandingCard";
 
 export function SettingsPanel({ ctx }: { ctx: any }) {
   const school = ctx.schools[0];
@@ -95,7 +96,7 @@ export function SettingsPanel({ ctx }: { ctx: any }) {
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
             <Badge variant="outline" className="border-[#0f766e]/30 bg-[#e6f4f1] text-[#0f766e] font-bold">کد ورود مدرسه: <span dir="ltr" className="ml-1 tracking-widest">{school?.code ?? "—"}</span></Badge>
-            <span className="text-xs text-slate-500">دانش‌آموزان و کارکنان با همین کد + نام کاربری وارد می‌شوند.</span>
+            <span className="text-xs text-slate-500">دانش‌آموزان و کارکنان با همین کد + نام کاربری وارد می‌شوند. والدین هم با همین کد + «کد والد» کارنامه می‌بینند (بخش مدیریت ← دانش‌آموزان ← اولیا).</span>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
@@ -110,6 +111,9 @@ export function SettingsPanel({ ctx }: { ctx: any }) {
           <Button onClick={saveSchoolInfo} disabled={updateSchool.isPending}>ذخیره اطلاعات مدرسه</Button>
         </CardContent>
       </Card>
+
+      {/* ——— فاز ۴: وایت‌لیبل — لوگو + رنگ اصلی ——— */}
+      <BrandingCard ctx={ctx} />
 
       <Card className="border-0 shadow-sm rounded-2xl">
         <CardHeader>

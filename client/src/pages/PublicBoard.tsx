@@ -67,11 +67,14 @@ const kindLabel = (kind: string) => (kind === "positive" ? "مثبت" : kind ===
 
 export default function PublicBoard() {
   const classesQuery = trpc.publicView.classes.useQuery(undefined, { refetchInterval: 60000 });
+  const brandingQuery = trpc.publicView.branding.useQuery(undefined, { staleTime: 60000 });
   const [classId, setClassId] = useState<string>("");
   const [selectedStudentId, setSelectedStudentId] = useState<number | null>(null);
 
   const schoolName = classesQuery.data?.schoolName ?? "دفترکلاس";
   const classes = classesQuery.data?.classes ?? [];
+  const accent = brandingQuery.data?.primaryColor || "#0f766e";
+  const logoData = brandingQuery.data?.logoData ?? null;
   // کلاس پیش‌فرض = کلاسی با بیشترین دانش‌آموز (تا تابلو از اول پر باشد)
   const defaultClassId = useMemo(() => {
     if (classes.length === 0) return "";
@@ -103,12 +106,12 @@ export default function PublicBoard() {
   return (
     <div dir="rtl" className="min-h-screen bg-gradient-to-b from-[#f4f7f6] to-white text-slate-800">
       <header className="max-w-4xl mx-auto px-4 sm:px-6 pt-8 pb-4 text-center">
-        <div className="h-16 w-16 mx-auto rounded-2xl bg-[#0f766e] text-white grid place-items-center shadow-lg">
-          <School className="h-8 w-8" />
+        <div className="h-16 w-16 mx-auto rounded-2xl text-white grid place-items-center shadow-lg overflow-hidden" style={{ background: logoData ? "#ffffff" : accent }} data-testid="public-board-logo">
+          {logoData ? <img src={logoData} alt="لوگو" className="h-full w-full object-contain" /> : <School className="h-8 w-8" />}
         </div>
         <h1 className="text-2xl sm:text-3xl font-black mt-4">{schoolName}</h1>
         <p className="text-slate-500 mt-2 text-sm">تابلوی امتیازات کلاس‌ها — برای دیدن فعالیت‌های هر دانش‌آموز، روی نام او بزنید</p>
-        <p className="text-xs text-slate-400 mt-1">به‌روزرسانی: {formatJalali(today)}</p>
+        <p className="text-xs text-slate-400 mt-1">به‌روزرسانی: {formatJalali(today)} · <a href="/parent" className="underline hover:text-slate-600">ورود اولیا (کارنامه فرزند)</a></p>
       </header>
 
       <main className="max-w-4xl mx-auto px-4 sm:px-6 pb-16 space-y-5">
@@ -119,8 +122,9 @@ export default function PublicBoard() {
               key={c.id}
               onClick={() => setClassId(String(c.id))}
               className={`rounded-2xl px-4 py-2.5 text-sm font-bold border transition-all ${activeClassId === String(c.id)
-                ? "bg-[#0f766e] text-white border-[#0f766e] shadow-md"
-                : "bg-white text-slate-600 border-slate-200 hover:border-[#0f766e] hover:text-[#0f766e]"}`}
+                ? "text-white shadow-md"
+                : "bg-white text-slate-600 hover:opacity-80"}`}
+              style={activeClassId === String(c.id) ? { background: accent, borderColor: accent } : { borderColor: "#e2e8f0" }}
             >
               {c.name}
               <span className={`mr-2 text-xs ${activeClassId === String(c.id) ? "text-teal-100" : "text-slate-400"}`}>({c.studentCount} نفر)</span>

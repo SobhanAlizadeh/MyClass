@@ -17,6 +17,7 @@ import {
   listExamsWithStats, listExamsBetween, createExam, updateExam, deleteExam, listExamScores, saveExamScores,
   listEvents, createEvent, updateEvent, moveEvent, moveExam, deleteEvent,
   getPointsGradeConfig, setPointsGradeConfig, pointsGradePreview, pointsGradeApply,
+  getStudentReportCard, ensureParentCode, setParentInfo, getSchoolBranding, setSchoolBranding, getParentReportCard,
 } from "./db-v2";
 import { revokeTelegramInviteLink, loadTgCfg, testBotToken, saveSchoolBotConfig, registerSchoolWebhook, getSchoolWebhookInfo, disconnectSchoolBot } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -109,6 +110,35 @@ export const appRouter = router({
     classes: publicProcedure.input(z.object({ schoolCode: z.string().optional() }).optional()).query(({ input }) => getPublicClasses(input?.schoolCode)),
     classStudents: publicProcedure.input(z.object({ classId: z.number() })).query(({ input }) => getPublicClassStudents(input.classId)),
     student: publicProcedure.input(z.object({ studentId: z.number() })).query(({ input }) => getPublicStudent(input.studentId)),
+    // وایت‌لیبل تابلوی عمومی (لوگو + رنگ مدرسه پیش‌فرض)
+    branding: publicProcedure.query(async () => {
+      const school = await getDefaultPublicSchool();
+      if (!school) return { schoolName: "", logoData: null, primaryColor: null };
+      const b = await getSchoolBranding(school.id);
+      return { schoolName: school.name, logoData: b.logoData, primaryColor: b.primaryColor };
+    }),
+    // ورود اولیا: کد مدرسه + کد والد → کارنامه فقط‌خواندنی (بدون احراز هویت)
+    parentReport: publicProcedure.input(z.object({ schoolCode: z.string().min(1), parentCode: z.string().min(4).max(24) })).query(({ input }) => getParentReportCard(input.schoolCode, input.parentCode)),
+  }),
+  // ——— فاز ۴: کارنامه + کد اولیا ———
+  reports: router({
+    card: schoolAnyProcedure.input(z.object({ studentId: z.number().int().positive() })).query(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "کارنامه فقط از پنل مدرسه قابل مشاهده است" });
+      return getStudentReportCard(ctx.schoolId, input.studentId);
+    }),
+    // ساخت/نمایش کد دسترسی والد — مدیر و تنظیمگر
+    parentCode: schedulerProcedure.input(z.object({ studentId: z.number().int().positive() })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return ensureParentCode(ctx.schoolId, input.studentId);
+    }),
+  }),
+  // ——— فاز ۴: وایت‌لیبل — لوگو و رنگ مدرسه — نوشتن فقط مدیر ———
+  branding: router({
+    get: schoolAnyProcedure.query(({ ctx }) => ctx.schoolId == null ? { logoData: null, primaryColor: null } : getSchoolBranding(ctx.schoolId)),
+    set: managerOnlyProcedure.input(z.object({ logoData: z.string().max(300000).nullable().optional(), primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional() })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "هویت بصری فقط از پنل مدرسه توسط مدیر تنظیم می‌شود" });
+      return setSchoolBranding(ctx.schoolId, input);
+    }),
   }),
   // پنل «دعوت‌ها» — فقط مدیر مدرسه؛ داده اسکوپ‌شده به مدرسه خودش
   referrals: router({
@@ -179,7 +209,12 @@ export const appRouter = router({
     updateSchoolName: managerOnlyProcedure.input(z.object({ id: z.number(), name: z.string().min(1), address: z.string().optional() })).mutation(({ input }) => updateSchool(input)),
     addClass: schedulerProcedure.input(z.object({ name: z.string().min(1), grade: z.string().optional(), schoolYear: z.string().optional() })).mutation(({ ctx, input }) => createClass({ ...input, schoolId: ctx.schoolId ?? null })),
     addTeam: schedulerProcedure.input(z.object({ classId: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createTeam(input); }),
-    addStudent: schedulerProcedure.input(z.object({ classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createStudent(input); }),
+    addStudent: schedulerProcedure.input(z.object({ classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional(), parentName: z.string().max(120).optional(), parentPhone: z.string().max(30).optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createStudent(input); }),
+    // فاز ۴: مشخصات والد (نام/تلفن) — جدا از ویرایش نام دانش‌آموز
+    setParent: schedulerProcedure.input(z.object({ studentId: z.number().int().positive(), parentName: z.string().max(120).nullable().optional(), parentPhone: z.string().max(30).nullable().optional() })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return setParentInfo(ctx.schoolId, input.studentId, input);
+    }),
     attendance: teacherProcedure.input(z.object({ studentId: z.number(), date, status: z.enum(["present", "absent", "late", "excused"]), note: z.string().optional(), period: z.number().int().min(1).max(10).nullable().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveAttendance(input); }),
     addSubject: teacherProcedure.input(z.object({ classId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createSubject(input); }),
     updateSubject: teacherProcedure.input(z.object({ id: z.number(), classId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return updateSubject(input); }),

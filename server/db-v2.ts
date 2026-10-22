@@ -5,6 +5,8 @@ import { connect } from "@tidbcloud/serverless";
 import { drizzle } from "drizzle-orm/tidb-serverless";
 import { TRPCError } from "@trpc/server";
 import { academicYears, activities, attendance, classes, events, exams, grades, schools, scheduleSlots, studentTeamTransfers, students, subjects, teams, users, type School, type User } from "../drizzle/schema";
+import type { StudentReportCard, SubjectReportRow } from "../shared/report-card";
+export type { StudentReportCard, SubjectReportRow };
 import { getDb } from "./db";
 import { getEnv } from "./_core/env";
 
@@ -527,6 +529,13 @@ export function ensureV2Columns(conn: ReturnType<typeof connect>) {
       "ALTER TABLE events ADD INDEX IF NOT EXISTS idx_events_school_date (schoolId, date)",
       "ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS points_grade_base DOUBLE NULL",
       "ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS points_grade_divisor DOUBLE NULL",
+      // — فاز ۴: اولیا (کد دسترسی) + وایت‌لیبل (لوگو/رنگ) —
+      "ALTER TABLE students ADD COLUMN IF NOT EXISTS parentName VARCHAR(120) NULL",
+      "ALTER TABLE students ADD COLUMN IF NOT EXISTS parentPhone VARCHAR(30) NULL",
+      "ALTER TABLE students ADD COLUMN IF NOT EXISTS parentCode VARCHAR(24) NULL",
+      "ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS logo_data TEXT NULL",
+      "ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS primary_color VARCHAR(20) NULL",
+      "CREATE UNIQUE INDEX IF NOT EXISTS uq_students_parent_code ON students(parentCode)",
       "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS school_id INT NULL",
       "ALTER TABLE schools ADD UNIQUE INDEX IF NOT EXISTS uq_schools_code (code)",
       "ALTER TABLE users ADD INDEX IF NOT EXISTS idx_users_school_username (schoolId, username)",
@@ -804,5 +813,172 @@ export async function pointsGradeApply(schoolId: number, classId: number, date: 
     applied++;
   }
   return { applied };
+}
+
+// ==========================================================================
+// ——— فاز ۴: کارنامه + اولیا + وایت‌لیبل ———
+// ==========================================================================
+
+// گزارش کامل یک دانش‌آموز — مبنای کارنامه چاپی و صفحه والد
+export async function getStudentReportCard(schoolId: number, studentId: number): Promise<StudentReportCard> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const studentRows = await db.select().from(students).where(and(eq(students.id, studentId), eq(students.schoolId, schoolId))).limit(1);
+  const st = studentRows[0];
+  if (!st) throw new TRPCError({ code: "NOT_FOUND", message: "این دانش‌آموز به مدرسه شما تعلق ندارد" });
+  const [classRows, gradeRows, attRows, actRows] = await Promise.all([
+    db.select({ id: classes.id, name: classes.name, academicYearId: classes.academicYearId }).from(classes).where(eq(classes.id, st.classId)).limit(1),
+    db.select({ id: grades.id, subjectId: grades.subjectId, gradeType: grades.gradeType, title: grades.title, score: grades.score, maxScore: grades.maxScore, date: grades.date })
+      .from(grades).where(and(eq(grades.studentId, studentId), eq(grades.schoolId, schoolId))).orderBy(desc(grades.date), desc(grades.id)).limit(500),
+    db.select({ status: attendance.status, period: attendance.period })
+      .from(attendance).where(and(eq(attendance.studentId, studentId), eq(attendance.schoolId, schoolId))).limit(2000),
+    db.select({ id: activities.id, date: activities.date, title: activities.title, description: activities.description, kind: activities.kind, points: activities.points })
+      .from(activities).where(and(eq(activities.studentId, studentId), eq(activities.schoolId, schoolId))).orderBy(desc(activities.date), desc(activities.id)).limit(60),
+  ]);
+  const cls = classRows[0];
+  // نام درس‌ها (درس‌های کلاس + هر درسی که در نمره‌ها آمده)
+  const subjectIds = new Set<number>();
+  for (const g of gradeRows) if (g.subjectId != null) subjectIds.add(g.subjectId);
+  const subjectRows = subjectIds.size
+    ? await db.select({ id: subjects.id, name: subjects.name, classId: subjects.classId }).from(subjects).where(and(eq(subjects.schoolId, schoolId), sql`${subjects.id} IN (${sql.join(Array.from(subjectIds).map(id => sql`${id}`), sql`, `)})`))
+    : [];
+  const subjectName = (id: number | null) => (id == null ? "" : subjectRows.find(s => s.id === id)?.name ?? "درس حذف‌شده");
+  // درس‌های فعلی کلاس (حتی اگر نمره‌ای ندارند) برای ردیف‌های خالی کارنامه
+  const classSubjects = cls ? await db.select({ id: subjects.id, name: subjects.name }).from(subjects).where(and(eq(subjects.classId, cls.id), eq(subjects.schoolId, schoolId))).orderBy(asc(subjects.id)) : [];
+  const norm = (score: number, max: number) => (max > 0 ? (score / max) * 20 : 0);
+  const buildRow = (subjectId: number | null, subjectNameValue: string): SubjectReportRow => {
+    const rows = gradeRows.filter(g => (g.subjectId ?? null) === subjectId);
+    const avgOf = (type: "class" | "midterm" | "final") => {
+      const list = rows.filter(g => g.gradeType === type);
+      if (!list.length) return null;
+      return Math.round((list.reduce((s, g) => s + norm(Number(g.score), Number(g.maxScore)), 0) / list.length) * 100) / 100;
+    };
+    const classAvg = avgOf("class"), midtermAvg = avgOf("midterm"), finalAvg = avgOf("final");
+    const all = rows.map(g => norm(Number(g.score), Number(g.maxScore)));
+    return {
+      subjectId, subjectName: subjectNameValue,
+      classAvg, midtermAvg, finalAvg,
+      overallAvg: all.length ? Math.round((all.reduce((s, v) => s + v, 0) / all.length) * 100) / 100 : null,
+      gradeCount: rows.length,
+    };
+  };
+  const seen = new Set<number | null>();
+  const subjectCard: SubjectReportRow[] = [];
+  for (const cs of classSubjects) { subjectCard.push(buildRow(cs.id, cs.name)); seen.add(cs.id); }
+  for (const g of gradeRows) {
+    const key = g.subjectId ?? null;
+    if (!seen.has(key)) { seen.add(key); subjectCard.push(buildRow(key, key == null ? "ارزیابی بدون درس" : subjectName(key))); }
+  }
+  // حضور و غیاب: روزانه (period=null) + زنگی
+  const present = attRows.filter(a => a.status === "present").length;
+  const absent = attRows.filter(a => a.status === "absent" && (a.period ?? null) === null).length;
+  const late = attRows.filter(a => a.status === "late").length;
+  const excused = attRows.filter(a => a.status === "excused").length;
+  const absentPeriods = attRows.filter(a => a.status === "absent" && (a.period ?? null) !== null).length;
+  const totalRecords = attRows.length;
+  // امتیاز: totalPoints مرجع است؛ مثبت/منفی از فعالیت‌ها؛ مصرف = منفی‌ها
+  const positive = actRows.filter(a => a.points > 0).reduce((s, a) => s + Number(a.points), 0);
+  const negative = actRows.filter(a => a.points < 0).reduce((s, a) => s + Math.abs(Number(a.points)), 0);
+  let yearTitle: string | null = null;
+  if (cls?.academicYearId) {
+    const yr = await db.select({ title: academicYears.title }).from(academicYears).where(eq(academicYears.id, cls.academicYearId)).limit(1);
+    yearTitle = yr[0]?.title ?? null;
+  }
+  return {
+    student: { id: st.id, firstName: st.firstName, lastName: st.lastName, studentCode: st.studentCode ?? null, totalPoints: Number(st.totalPoints ?? 0), parentName: st.parentName ?? null, parentPhone: st.parentPhone ?? null, parentCode: st.parentCode ?? null, graduated: st.graduated ?? 0 },
+    className: cls?.name ?? null,
+    teamName: st.teamId ? (await db.select({ name: teams.name }).from(teams).where(eq(teams.id, st.teamId)).limit(1))[0]?.name ?? null : null,
+    academicYearTitle: yearTitle,
+    subjects: subjectCard,
+    attendance: { present, absent, late, excused, absentPeriods, totalRecords, presentRate: totalRecords ? Math.round((present / totalRecords) * 1000) / 10 : 0 },
+    points: { total: Number(st.totalPoints ?? 0), positive: Math.round(positive * 100) / 100, negative: Math.round(negative * 100) / 100, count: actRows.length, spent: negative },
+    activities: actRows.map(a => ({ ...a, points: Number(a.points) })),
+  };
+}
+
+// --- اولیا: کد دسترسی اختصاصی هر دانش‌آموز ---------------------------------------
+const PARENT_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // بدون I/L/0/1 برای خوانایی
+export async function ensureParentCode(schoolId: number, studentId: number): Promise<{ code: string; created: boolean }> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: students.id, parentCode: students.parentCode, schoolId: students.schoolId }).from(students).where(eq(students.id, studentId)).limit(1);
+  const st = rows[0];
+  if (!st || st.schoolId !== schoolId) throw new TRPCError({ code: "NOT_FOUND", message: "این دانش‌آموز به مدرسه شما تعلق ندارد" });
+  if (st.parentCode) return { code: st.parentCode, created: false };
+  const conn = getV2Conn();
+  if (!conn) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const bytes = Array.from(crypto.getRandomValues(new Uint8Array(10)));
+    let code = "";
+    for (const b of bytes) code += PARENT_CODE_ALPHABET[b % PARENT_CODE_ALPHABET.length];
+    const clash = await db.select({ id: students.id }).from(students).where(eq(students.parentCode, code)).limit(1);
+    if (clash.length) continue;
+    await conn.execute("UPDATE students SET parentCode = ? WHERE id = ?", [code, studentId]);
+    return { code, created: true };
+  }
+  throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "ساخت کد دسترسی ناموفق بود؛ دوباره تلاش کنید" });
+}
+
+export async function setParentInfo(schoolId: number, studentId: number, input: { parentName?: string | null; parentPhone?: string | null }): Promise<{ ok: true }> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: students.id }).from(students).where(and(eq(students.id, studentId), eq(students.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "این دانش‌آموز به مدرسه شما تعلق ندارد" });
+  const patch: Record<string, string | null> = {};
+  if (input.parentName !== undefined) patch.parentName = input.parentName?.trim() || null;
+  if (input.parentPhone !== undefined) patch.parentPhone = input.parentPhone?.trim() || null;
+  if (Object.keys(patch).length) await db.update(students).set(patch).where(eq(students.id, studentId));
+  return { ok: true };
+}
+
+// --- وایت‌لیبل: لوگو + رنگ اصلی مدرسه (در school_settings) ------------------------
+export type SchoolBranding = { logoData: string | null; primaryColor: string | null };
+const BRANDING_MAX_CHARS = 300_000; // ~220KB تصویر base64
+
+export async function getSchoolBranding(schoolId: number): Promise<SchoolBranding> {
+  const conn = getV2Conn();
+  if (!conn) return { logoData: null, primaryColor: null };
+  const res: any = await conn.execute("SELECT logo_data, primary_color FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]).catch(() => null);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  return {
+    logoData: row?.logo_data != null && String(row.logo_data) !== "" ? String(row.logo_data) : null,
+    primaryColor: row?.primary_color != null && String(row.primary_color) !== "" ? String(row.primary_color) : null,
+  };
+}
+
+export async function setSchoolBranding(schoolId: number, input: { logoData?: string | null; primaryColor?: string | null }): Promise<{ ok: true }> {
+  const conn = getV2Conn();
+  if (!conn) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  if (input.logoData !== undefined && input.logoData != null) {
+    const v = String(input.logoData);
+    if (v.length > BRANDING_MAX_CHARS) throw new TRPCError({ code: "BAD_REQUEST", message: "حجم لوگو زیاد است؛ تصویر کوچک‌تری انتخاب کنید" });
+    if (v !== "" && !/^data:image\/(png|jpe?g|webp|gif);base64,/.test(v)) throw new TRPCError({ code: "BAD_REQUEST", message: "فرمت لوگو معتبر نیست (PNG/JPG/WebP)" });
+  }
+  if (input.primaryColor != null && input.primaryColor !== "" && !/^#[0-9a-fA-F]{6}$/.test(input.primaryColor)) throw new TRPCError({ code: "BAD_REQUEST", message: "رنگ باید به شکل #RRGGBB باشد" });
+  await conn.execute(
+    "INSERT INTO school_settings (school_id, logo_data, primary_color, updated_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE " +
+    "logo_data = IF(VALUES(logo_data) IS NULL, logo_data, VALUES(logo_data)), " +
+    "primary_color = IF(VALUES(primary_color) IS NULL, primary_color, VALUES(primary_color)), updated_at = VALUES(updated_at)",
+    [schoolId, input.logoData ?? null, input.primaryColor ?? null, Date.now()],
+  );
+  return { ok: true };
+}
+
+// صفحه والد (عمومی): کد مدرسه + کد والد → کارنامه فقط‌خواندنی
+export async function getParentReportCard(schoolCode: string, parentCode: string): Promise<{ schoolName: string; branding: SchoolBranding; card: StudentReportCard } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const code = parentCode.trim().toUpperCase();
+  if (!code) return null;
+  const schoolRows = await db.select({ id: schools.id, name: schools.name, status: schools.status, subscriptionEnd: schools.subscriptionEnd }).from(schools).where(eq(schools.code, schoolCode.trim().toUpperCase())).limit(1);
+  const school = schoolRows[0];
+  if (!school || school.status !== "active") return null;
+  const runtime = computeSchoolRuntime(school as School);
+  if (!runtime.ok) return null;
+  const studentRows = await db.select({ id: students.id }).from(students).where(and(eq(students.schoolId, school.id), eq(students.parentCode, code))).limit(1);
+  if (!studentRows.length) return null;
+  const card = await getStudentReportCard(school.id, studentRows[0].id);
+  const branding = await getSchoolBranding(school.id);
+  return { schoolName: school.name, branding, card };
 }
 

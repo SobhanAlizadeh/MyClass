@@ -7,6 +7,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import SuperAdmin from "./pages/SuperAdmin";
 import PublicBoard from "./pages/PublicBoard";
+import ParentReport from "./pages/ParentReport";
 function Router() { return <Switch><Route path="/" component={PublicBoard} /><Route path="/admin" component={Home} />
-<Route path="/super" component={SuperAdmin} /><Route path="/404" component={NotFound} /><Route component={NotFound} /></Switch>; }
+<Route path="/parent" component={ParentReport} /><Route path="/super" component={SuperAdmin} /><Route path="/404" component={NotFound} /><Route component={NotFound} /></Switch>; }
 export default function App() { return <ErrorBoundary><ThemeProvider defaultTheme="light" switchable><TooltipProvider><Toaster /><Router /></TooltipProvider></ThemeProvider></ErrorBoundary>; }
