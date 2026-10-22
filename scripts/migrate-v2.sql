@@ -31,6 +31,12 @@ ALTER TABLE activities ADD COLUMN IF NOT EXISTS schoolId INT NULL;
 ALTER TABLE student_team_transfers ADD COLUMN IF NOT EXISTS schoolId INT NULL;
 ALTER TABLE referrals ADD COLUMN IF NOT EXISTS school_id INT NULL;
 
+-- 4b) phase 2: period attendance + graduated flag + weekly schedule
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS period INT NULL;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS graduated INT NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS schedule_slots (id INT AUTO_INCREMENT PRIMARY KEY, schoolId INT NULL, classId INT NOT NULL, dayOfWeek INT NOT NULL, period INT NOT NULL, subjectId INT NULL, createdAt TIMESTAMP NOT NULL DEFAULT NOW());
+ALTER TABLE schedule_slots ADD INDEX IF NOT EXISTS idx_slots_class_day_period (classId, dayOfWeek, period);
+
 -- 5) backfill schoolId from class relationships (only where NULL)
 UPDATE teams t JOIN classes c ON t.classId = c.id SET t.schoolId = c.schoolId WHERE t.schoolId IS NULL;
 UPDATE students s JOIN classes c ON s.classId = c.id SET s.schoolId = c.schoolId WHERE s.schoolId IS NULL;

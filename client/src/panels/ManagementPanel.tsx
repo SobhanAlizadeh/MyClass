@@ -8,17 +8,19 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Edit3, GraduationCap, Layers, Plus, School as SchoolIcon, Trash2, UserCog, Users2 } from "lucide-react";
+import { Edit3, CalendarRange, GraduationCap, Layers, Plus, School as SchoolIcon, Trash2, UserCog, Users2 } from "lucide-react";
 import { Empty, SearchInput, matchesQuery } from "./shared";
 import { SubjectPanel } from "./SubjectPanel";
 import { UsersManager } from "./UsersManager";
+import { AcademicPanel } from "./AcademicPanel";
 
-type SubTab = "classes" | "subjects" | "teams" | "students" | "users";
+type SubTab = "classes" | "subjects" | "teams" | "students" | "academic" | "users";
 const SUBTABS: Array<{ key: SubTab; label: string; icon: any }> = [
   { key: "classes", label: "کلاس‌ها", icon: SchoolIcon },
   { key: "subjects", label: "دروس", icon: Layers },
   { key: "teams", label: "تیم‌ها", icon: Users2 },
   { key: "students", label: "دانش‌آموزان", icon: GraduationCap },
+  { key: "academic", label: "سال تحصیلی", icon: CalendarRange },
   { key: "users", label: "کاربران", icon: UserCog },
 ];
 
@@ -133,6 +135,9 @@ export function ManagementPanel({ ctx, role }: { ctx: any; role?: string }) {
             </CardContent></Card>
         );
       })()}
+
+      {/* ——— سال تحصیلی + ویزارد ارتقا ——— */}
+      {tab === "academic" && <AcademicPanel ctx={ctx} />}
 
       {/* ——— کاربران ——— */}
       {tab === "users" && <UsersManager role={role ?? ctx.userRole ?? "manager"} />}

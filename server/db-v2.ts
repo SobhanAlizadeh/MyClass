@@ -4,7 +4,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { connect } from "@tidbcloud/serverless";
 import { drizzle } from "drizzle-orm/tidb-serverless";
 import { TRPCError } from "@trpc/server";
-import { academicYears, classes, grades, schools, students, teams, users, type School, type User } from "../drizzle/schema";
+import { academicYears, activities, attendance, classes, grades, schools, scheduleSlots, studentTeamTransfers, students, subjects, teams, users, type School, type User } from "../drizzle/schema";
 import { getDb } from "./db";
 import { getEnv } from "./_core/env";
 
@@ -210,10 +210,24 @@ export async function updateTenantSchool(input: { id: number; name?: string; pho
 export async function deleteTenantSchool(id: number): Promise<void> {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
-  // حذف آبشاری دستی: همه کاربران/دانش‌آموزان/کلاس‌ها/تیم‌های مدرسه (رفع باگ: کاربران غیرمدیر یتیم می‌ماندند)
+  // حذف آبشاری دستی: همه رکوردهای وابسته به مدرسه (رفع باگ: کاربران غیرمدیر یتیم می‌ماندند + فاز ۲: سال/برنامه/حضور و...)
+  await db.delete(attendance).where(eq(attendance.schoolId, id));
+  await db.delete(scheduleSlots).where(eq(scheduleSlots.schoolId, id));
+  await db.delete(grades).where(eq(grades.schoolId, id));
+  await db.delete(activities).where(eq(activities.schoolId, id)).catch(() => {});
+  await db.delete(studentTeamTransfers).where(eq(studentTeamTransfers.schoolId, id)).catch(() => {});
   await db.delete(students).where(eq(students.schoolId, id));
   await db.delete(teams).where(eq(teams.schoolId, id));
+  await db.delete(subjects).where(eq(subjects.schoolId, id));
   await db.delete(classes).where(eq(classes.schoolId, id));
+  await db.delete(academicYears).where(eq(academicYears.schoolId, id));
+  const conn = getV2Conn();
+  if (conn) {
+    // جدول‌های v1-سبک (snake_case) که در دریزل تعریف نشده‌اند
+    await conn.execute("DELETE FROM referrals WHERE school_id = ?", [id]).catch(() => {});
+    await conn.execute("DELETE rj FROM referral_joins rj LEFT JOIN referrals r ON r.id = rj.referral_id WHERE r.id IS NULL OR r.school_id = ?", [id]).catch(() => {});
+    await conn.execute("DELETE FROM school_settings WHERE schoolId = ?", [id]).catch(() => {});
+  }
   await db.delete(users).where(eq(users.schoolId, id));
   await db.delete(schools).where(eq(schools.id, id));
 }
@@ -338,8 +352,136 @@ export async function listAcademicYears(schoolId: number) {
 export async function createAcademicYear(schoolId: number, input: { title: string; startDate?: string; endDate?: string }) {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
-  const rows = await db.insert(academicYears).values({ schoolId, title: input.title.trim(), startDate: input.startDate ?? null, endDate: input.endDate ?? null, active: 1 }).$returningId();
+  const title = input.title.trim();
+  if (!title) throw new TRPCError({ code: "BAD_REQUEST", message: "عنوان سال تحصیلی لازم است" });
+  const dup = await db.select({ id: academicYears.id }).from(academicYears).where(and(eq(academicYears.schoolId, schoolId), eq(academicYears.title, title))).limit(1);
+  if (dup.length) throw new TRPCError({ code: "CONFLICT", message: `سال تحصیلی «${title}» قبلاً ساخته شده است` });
+  const rows = await db.insert(academicYears).values({ schoolId, title, startDate: input.startDate?.trim() || null, endDate: input.endDate?.trim() || null, active: 0 }).$returningId();
   return Number((rows as Array<{ id: number }>)[0]?.id);
+}
+
+// سال فعال: هر مدرسه حداکثر یک سال فعال دارد — کلاس‌های جدید به آن وصل می‌شوند
+export async function setActiveAcademicYear(schoolId: number, yearId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: academicYears.id }).from(academicYears).where(and(eq(academicYears.id, yearId), eq(academicYears.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "سال تحصیلی پیدا نشد" });
+  await db.update(academicYears).set({ active: 0 }).where(eq(academicYears.schoolId, schoolId));
+  await db.update(academicYears).set({ active: 1 }).where(eq(academicYears.id, yearId));
+}
+
+export async function deleteAcademicYear(schoolId: number, yearId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: academicYears.id }).from(academicYears).where(and(eq(academicYears.id, yearId), eq(academicYears.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "سال تحصیلی پیدا نشد" });
+  const attached = await db.select({ id: classes.id }).from(classes).where(and(eq(classes.schoolId, schoolId), eq(classes.academicYearId, yearId))).limit(1);
+  if (attached.length) throw new TRPCError({ code: "CONFLICT", message: "به این سال تحصیلی کلاس وصل است؛ اول کلاس‌ها را حذف یا منتقل کنید" });
+  await db.delete(academicYears).where(eq(academicYears.id, yearId));
+}
+
+// --- برنامه هفتگی (فاز ۲) --------------------------------------------------------
+export async function listScheduleSlots(schoolId: number, classId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(scheduleSlots).where(and(eq(scheduleSlots.schoolId, schoolId), eq(scheduleSlots.classId, classId)));
+}
+
+export async function setScheduleSlot(schoolId: number, input: { classId: number; dayOfWeek: number; period: number; subjectId: number | null }): Promise<{ ok: true }> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  // گارد مالکیت: کلاس باید به همان مدرسه تعلق داشته باشد (ضد دستکاری برنامه مدرسه دیگر)
+  const owned = await db.select({ id: classes.id }).from(classes).where(and(eq(classes.id, input.classId), eq(classes.schoolId, schoolId))).limit(1);
+  if (!owned.length) throw new TRPCError({ code: "NOT_FOUND", message: "این کلاس به مدرسه شما تعلق ندارد" });
+  if (input.subjectId != null) {
+    // درس باید به همان کلاس تعلق داشته باشد (ضد درج درس کلاس دیگر)
+    const rows = await db.select({ id: subjects.id }).from(subjects).where(and(eq(subjects.id, input.subjectId), eq(subjects.classId, input.classId), eq(subjects.schoolId, schoolId))).limit(1);
+    if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "این درس به این کلاس تعلق ندارد" });
+  }
+  const existing = await db.select().from(scheduleSlots).where(and(eq(scheduleSlots.schoolId, schoolId), eq(scheduleSlots.classId, input.classId), eq(scheduleSlots.dayOfWeek, input.dayOfWeek), eq(scheduleSlots.period, input.period))).limit(1);
+  if (input.subjectId == null) {
+    if (existing.length) await db.delete(scheduleSlots).where(eq(scheduleSlots.id, existing[0].id));
+    return { ok: true };
+  }
+  if (existing.length) {
+    await db.update(scheduleSlots).set({ subjectId: input.subjectId }).where(eq(scheduleSlots.id, existing[0].id));
+  } else {
+    await db.insert(scheduleSlots).values({ schoolId, classId: input.classId, dayOfWeek: input.dayOfWeek, period: input.period, subjectId: input.subjectId });
+  }
+  return { ok: true };
+}
+
+// --- ویزارد ارتقا (فاز ۲) --------------------------------------------------------
+// promote → ساخت/انتخاب کلاس مقصد در سال جدید و انتقال دانش‌آموزان (تیم‌ها منتقل نمی‌شوند)
+// graduate → علامت‌گذاری فارغ‌التحصیل (graduated=1)؛ از همه لیست‌های فعال حذف می‌شوند ولی تاریخچه می‌ماند
+export type PromotionMapping = { fromClassId: number; mode: "promote" | "graduate"; toClassId?: number | null; toClassName?: string | null };
+
+export async function promotionPreview(schoolId: number, input: { fromYearId: number | null; toYearId: number }) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const fromClasses = await db.select().from(classes).where(input.fromYearId == null
+    ? and(eq(classes.schoolId, schoolId), sql`${classes.academicYearId} IS NULL`)
+    : and(eq(classes.schoolId, schoolId), eq(classes.academicYearId, input.fromYearId)));
+  const [studentRows, toYearClasses] = await Promise.all([
+    db.select({ classId: students.classId, count: sql<number>`count(*)` }).from(students).where(and(eq(students.schoolId, schoolId), eq(students.graduated, 0))).groupBy(students.classId),
+    db.select({ id: classes.id, name: classes.name }).from(classes).where(and(eq(classes.schoolId, schoolId), eq(classes.academicYearId, input.toYearId))),
+  ]);
+  const counts = new Map(studentRows.map(r => [r.classId, Number(r.count)]));
+  return {
+    fromClasses: fromClasses.map(c => ({ id: c.id, name: c.name, grade: c.grade, studentCount: counts.get(c.id) ?? 0 })),
+    toYearClasses,
+  };
+}
+
+export async function promotionApply(schoolId: number, input: { fromYearId: number | null; toYearId: number; mappings: PromotionMapping[] }): Promise<{ promoted: number; graduated: number; createdClasses: number }> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const [targetYear] = await db.select().from(academicYears).where(and(eq(academicYears.id, input.toYearId), eq(academicYears.schoolId, schoolId))).limit(1);
+  if (!targetYear) throw new TRPCError({ code: "NOT_FOUND", message: "سال تحصیلی مقصد پیدا نشد" });
+  if (input.fromYearId != null) {
+    const [fromYear] = await db.select().from(academicYears).where(and(eq(academicYears.id, input.fromYearId), eq(academicYears.schoolId, schoolId))).limit(1);
+    if (!fromYear) throw new TRPCError({ code: "NOT_FOUND", message: "سال تحصیلی مبدأ پیدا نشد" });
+    if (input.fromYearId === input.toYearId) throw new TRPCError({ code: "BAD_REQUEST", message: "سال مبدأ و مقصد نمی‌توانند یکسان باشند" });
+  }
+  const seen = new Set<number>();
+  let promoted = 0, graduated = 0, createdClasses = 0;
+  for (const m of input.mappings) {
+    if (seen.has(m.fromClassId)) throw new TRPCError({ code: "BAD_REQUEST", message: "هر کلاس فقط یک بار در لیست ارتقا می‌آید" });
+    seen.add(m.fromClassId);
+    const [cls] = await db.select().from(classes).where(and(eq(classes.id, m.fromClassId), eq(classes.schoolId, schoolId))).limit(1);
+    if (!cls) throw new TRPCError({ code: "NOT_FOUND", message: `کلاس #${m.fromClassId} به مدرسه شما تعلق ندارد` });
+    const moveFilter = and(eq(students.classId, m.fromClassId), eq(students.schoolId, schoolId), eq(students.graduated, 0));
+    if (m.mode === "graduate") {
+      const before = await db.select({ c: sql<number>`count(*)` }).from(students).where(moveFilter);
+      const n = Number(before[0]?.c ?? 0);
+      await db.update(students).set({ graduated: 1, teamId: null }).where(moveFilter);
+      graduated += n;
+      continue;
+    }
+    let toClassId = m.toClassId ?? null;
+    if (toClassId != null) {
+      const [toCls] = await db.select().from(classes).where(and(eq(classes.id, toClassId), eq(classes.schoolId, schoolId))).limit(1);
+      if (!toCls) throw new TRPCError({ code: "NOT_FOUND", message: "کلاس مقصد به مدرسه شما تعلق ندارد" });
+      if (toCls.academicYearId !== input.toYearId) throw new TRPCError({ code: "BAD_REQUEST", message: "کلاس مقصد باید به سال تحصیلی مقصد تعلق داشته باشد" });
+    } else {
+      const name = (m.toClassName ?? cls.name ?? "").trim();
+      if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "نام کلاس مقصد لازم است" });
+      // استفاده مجدد از کلاس هم‌نام در سال مقصد (اجرای دوباره = بدون duplicate)
+      const sameYearClasses = await db.select({ id: classes.id, name: classes.name }).from(classes).where(and(eq(classes.schoolId, schoolId), eq(classes.academicYearId, input.toYearId)));
+      const hit = sameYearClasses.find(c => c.name.trim() === name);
+      if (hit) { toClassId = hit.id; }
+      else {
+        const ids = await db.insert(classes).values({ schoolId, name, grade: cls.grade, schoolYear: targetYear.title, academicYearId: input.toYearId }).$returningId();
+        toClassId = Number((ids as Array<{ id: number }>)[0]?.id);
+        createdClasses++;
+      }
+    }
+    const before = await db.select({ c: sql<number>`count(*)` }).from(students).where(moveFilter);
+    const n = Number(before[0]?.c ?? 0);
+    await db.update(students).set({ classId: toClassId, teamId: null }).where(moveFilter);
+    promoted += n;
+  }
+  return { promoted, graduated, createdClasses };
 }
 
 // --- Raw conn for one-off DDL guards used by routers ------------------------------
@@ -371,9 +513,13 @@ export function ensureV2Columns(conn: ReturnType<typeof connect>) {
       "ALTER TABLE grades ADD COLUMN IF NOT EXISTS schoolId INT NULL",
       "ALTER TABLE activities ADD COLUMN IF NOT EXISTS schoolId INT NULL",
       "ALTER TABLE student_team_transfers ADD COLUMN IF NOT EXISTS schoolId INT NULL",
+      "ALTER TABLE attendance ADD COLUMN IF NOT EXISTS period INT NULL",
+      "ALTER TABLE students ADD COLUMN IF NOT EXISTS graduated INT NOT NULL DEFAULT 0",
+      "CREATE TABLE IF NOT EXISTS schedule_slots (id INT AUTO_INCREMENT PRIMARY KEY, schoolId INT NULL, classId INT NOT NULL, dayOfWeek INT NOT NULL, period INT NOT NULL, subjectId INT NULL, createdAt TIMESTAMP NOT NULL DEFAULT NOW())",
       "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS school_id INT NULL",
       "ALTER TABLE schools ADD UNIQUE INDEX IF NOT EXISTS uq_schools_code (code)",
       "ALTER TABLE users ADD INDEX IF NOT EXISTS idx_users_school_username (schoolId, username)",
+      "ALTER TABLE schedule_slots ADD INDEX IF NOT EXISTS idx_slots_class_day_period (classId, dayOfWeek, period)",
     ];
     for (const stmt of alters) await conn.execute(stmt).catch(() => {});
     // backfill tenant columns از کلاس‌ها (فقط جاهایی که NULL است)

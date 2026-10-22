@@ -17,17 +17,18 @@ import { OverviewPanel } from "@/panels/OverviewPanel";
 import { AttendancePanel } from "@/panels/AttendancePanel";
 import { PointsPanel } from "@/panels/PointsPanel";
 import { ReportsPanel } from "@/panels/ReportsPanel";
+import { SchedulePanel } from "@/panels/SchedulePanel";
 import { ManagementPanel } from "@/panels/ManagementPanel";
 import { ReferralsPanel } from "@/panels/ReferralsPanel";
 import { SettingsPanel } from "@/panels/SettingsPanel";
 import { PanelButton } from "@/panels/shared";
 
-type PanelKey = "overview" | "attendance" | "points" | "reports" | "management" | "referrals" | "settings";
+type PanelKey = "overview" | "attendance" | "points" | "reports" | "schedule" | "management" | "referrals" | "settings";
 const ROLE_TABS: Record<string, PanelKey[]> = {
-  manager: ["overview", "attendance", "points", "reports", "referrals", "management", "settings"],
-  scheduler: ["overview", "management"],
-  teacher: ["overview", "attendance", "points", "reports"],
-  super_admin: ["overview", "attendance", "points", "reports", "referrals", "management", "settings"],
+  manager: ["overview", "attendance", "points", "reports", "schedule", "referrals", "management", "settings"],
+  scheduler: ["overview", "schedule", "management"],
+  teacher: ["overview", "attendance", "points", "reports", "schedule"],
+  super_admin: ["overview", "attendance", "points", "reports", "schedule", "referrals", "management", "settings"],
 };
 
 export default function Home() {
@@ -42,6 +43,7 @@ export default function Home() {
   const [entryClassId, setEntryClassId] = useState("");
   const [spendClassId, setSpendClassId] = useState("");
   const [attendanceClassId, setAttendanceClassId] = useState("");
+  const [attPeriod, setAttPeriod] = useState("daily");
   const [date, setDate] = useState(today);
   const [target, setTarget] = useState<"student" | "team">("student");
   const [studentId, setStudentId] = useState("");
@@ -147,8 +149,11 @@ export default function Home() {
   const visibleIds = useMemo(() => new Set(visibleStudents.map(s => s.id)), [visibleStudents]);
   const visibleTeams = selectedClass === "all" ? teams : teams.filter(t => String(t.classId) === selectedClass);
   const attendanceIds = useMemo(() => new Set(attendanceStudents.map(s => s.id)), [attendanceStudents]);
-  const todaysAttendance = (data?.attendance ?? []).filter(a => String(a.date).slice(0, 10) === date && attendanceIds.has(a.studentId));
-  const presentCount = todaysAttendance.filter(a => a.status === "present").length;
+  // فاز ۲ حضور زنگی: همه رکوردهای امروز (برای آمار کلی) + رکوردهای زنگ انتخاب‌شده (برای لیست)
+  const activePeriodNum = attPeriod === "daily" ? null : Number(attPeriod);
+  const dayAttendance = (data?.attendance ?? []).filter(a => String(a.date).slice(0, 10) === date && attendanceIds.has(a.studentId));
+  const todaysAttendance = dayAttendance.filter(a => (a.period ?? null) === activePeriodNum);
+  const presentCount = new Set(dayAttendance.filter(a => a.status === "present").map(a => a.studentId)).size;
   const totalPoints = students.reduce((sum, s) => sum + s.totalPoints, 0);
   const dateActivities = (data?.activities ?? []).filter(a => String(a.date).slice(0, 10) === date);
   const recentActivities = dateActivities.filter(a => a.studentId === null ? visibleTeams.some(t => t.id === a.teamId) : visibleIds.has(a.studentId)).slice(0, 10);
@@ -212,7 +217,7 @@ export default function Home() {
   const selectedStudent = students.find(s => String(s.id) === studentId);
   const selectedTeam = teams.find(t => String(t.id) === teamId);
 
-  const recordAttendance = (id: number, status: "present" | "absent" | "late") => addAttendance.mutate({ studentId: id, date, status });
+  const recordAttendance = (id: number, status: "present" | "absent" | "late") => addAttendance.mutate({ studentId: id, date, status, period: attPeriod === "daily" ? null : Number(attPeriod) });
   const spendScore = () => { const amount = Math.max(1, Math.abs(Number(spendPoints) || 0)); if (!spendNote.trim()) { toast.error("توضیح مصرف امتیاز را وارد کنید"); return; } if (spendTarget === "student" && spendStudentId) spendStudent.mutate({ studentId: Number(spendStudentId), date, description: spendNote.trim(), points: amount }); else if (spendTarget === "team" && spendTeamId) spendTeam.mutate({ teamId: Number(spendTeamId), date, description: spendNote.trim(), points: amount }); else toast.error(spendTarget === "student" ? "دانش‌آموز را انتخاب کنید" : "تیم را انتخاب کنید"); };
   const normalizedPoints = () => { const value = Math.abs(Number(points) || 0); return activityKind === "negative" ? -value : value; };
   const submitActivity = () => { if (!entryClassId) return toast.error("ابتدا کلاس را انتخاب کنید"); if (!activityTitle) return toast.error("شرح فعالیت را وارد کنید"); if (!teamId) return toast.error("ابتدا تیم را انتخاب کنید"); if (target === "student" && !studentId) return toast.error("دانش‌آموز را انتخاب کنید"); const payload = { date, title: activityTitle, kind: activityKind, points: normalizedPoints(), description: target === "team" ? "فعالیت تیمی" : "فعالیت دانش‌آموز" }; target === "student" ? addActivity.mutate({ ...payload, studentId: Number(studentId) }) : addTeamActivity.mutate({ ...payload, teamId: Number(teamId) }); };
@@ -235,6 +240,7 @@ export default function Home() {
 
   const ctx = {
     data, schools, classes, teams, students, subjects,
+    academicYears: data?.academicYears ?? [], activeYearId: data?.activeYearId ?? null, attPeriod, setAttPeriod,
     grades: data?.grades ?? [], activities: data?.activities ?? [], attendance: data?.attendance ?? [],
     studentTeams, entryTeams, entryStudents, spendTeams, spendStudents,
     visibleStudents, visibleTeams, attendanceStudents, todaysAttendance, presentCount, totalPoints,
@@ -280,12 +286,13 @@ export default function Home() {
 
   return <div dir="rtl" data-panel={activePanel} className="app-shell min-h-screen bg-[#f4f7f6] text-slate-900">
     <header className="border-b bg-white/90 backdrop-blur sticky top-0 z-20"><div className="max-w-[1440px] mx-auto px-6 h-20 flex items-center justify-between"><div className="flex items-center gap-3"><div className="h-11 w-11 rounded-2xl bg-[#0f766e] text-white grid place-items-center shadow-lg"><School className="h-6 w-6" /></div><div><p className="font-black text-xl tracking-tight">{school?.name ?? "دفترکلاس"}</p><p className="text-xs text-slate-500">پنل {roleLabels[role] ?? "کاربر"} · دفترکلاس</p></div></div><div className="flex items-center gap-3">{school && <div className="hidden md:block text-xs rounded-xl bg-teal-50 text-teal-800 px-3 py-1.5 font-semibold">اشتراک تا {school.subscriptionEnd ?? "—"}{school.daysLeft != null ? ` · ${school.daysLeft} روز` : ""}</div>}<div className="hidden sm:block text-left"><p className="text-sm font-semibold">امروز، {formatJalali(new Date())}</p><p className="text-xs text-slate-500">{user?.displayName ?? "کاربر دفترکلاس"}</p></div><Button type="button" variant="outline" size="icon" onClick={() => toggleTheme?.()} aria-label={theme === "dark" ? "فعال‌سازی تم روشن" : "فعال‌سازی تم تاریک"} title={theme === "dark" ? "تم روشن" : "تم تاریک"} className="rounded-xl border-slate-200 dark:border-slate-700">{theme === "dark" ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-slate-700" />}</Button><Button type="button" variant="outline" size="sm" onClick={() => { void logout(); }} className="rounded-xl border-slate-200">خروج</Button></div></div></header>
-    <nav className="mobile-panel-nav max-w-[1440px] mx-auto px-4 sm:px-6 pt-3" aria-label="بخش‌های دفترکلاس"><div className="grid gap-1 rounded-2xl bg-white p-1.5 shadow-sm border" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>{tabs.includes("overview") && <PanelButton active={activePanel === "overview"} onClick={() => setActivePanel("overview")}>نمای کلی</PanelButton>}{tabs.includes("attendance") && <PanelButton active={activePanel === "attendance"} onClick={() => setActivePanel("attendance")}>ثبت</PanelButton>}{tabs.includes("points") && <PanelButton active={activePanel === "points"} onClick={() => setActivePanel("points")}>امتیاز</PanelButton>}{tabs.includes("reports") && <PanelButton active={activePanel === "reports"} onClick={() => setActivePanel("reports")}>گزارش</PanelButton>}{tabs.includes("referrals") && <PanelButton active={activePanel === "referrals"} onClick={() => setActivePanel("referrals")}>دعوت‌ها</PanelButton>}{tabs.includes("management") && <PanelButton active={activePanel === "management"} onClick={() => setActivePanel("management")}>مدیریت</PanelButton>}{tabs.includes("settings") && <PanelButton active={activePanel === "settings"} onClick={() => setActivePanel("settings")}>تنظیمات</PanelButton>}</div></nav>
+    <nav className="mobile-panel-nav max-w-[1440px] mx-auto px-4 sm:px-6 pt-3" aria-label="بخش‌های دفترکلاس"><div className="grid gap-1 rounded-2xl bg-white p-1.5 shadow-sm border overflow-x-auto" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(64px, 1fr))` }}>{tabs.includes("overview") && <PanelButton active={activePanel === "overview"} onClick={() => setActivePanel("overview")}>نمای کلی</PanelButton>}{tabs.includes("attendance") && <PanelButton active={activePanel === "attendance"} onClick={() => setActivePanel("attendance")}>ثبت</PanelButton>}{tabs.includes("points") && <PanelButton active={activePanel === "points"} onClick={() => setActivePanel("points")}>امتیاز</PanelButton>}{tabs.includes("reports") && <PanelButton active={activePanel === "reports"} onClick={() => setActivePanel("reports")}>گزارش</PanelButton>}{tabs.includes("schedule") && <PanelButton active={activePanel === "schedule"} onClick={() => setActivePanel("schedule")}>برنامه</PanelButton>}{tabs.includes("referrals") && <PanelButton active={activePanel === "referrals"} onClick={() => setActivePanel("referrals")}>دعوت‌ها</PanelButton>}{tabs.includes("management") && <PanelButton active={activePanel === "management"} onClick={() => setActivePanel("management")}>مدیریت</PanelButton>}{tabs.includes("settings") && <PanelButton active={activePanel === "settings"} onClick={() => setActivePanel("settings")}>تنظیمات</PanelButton>}</div></nav>
     <main className="max-w-[1440px] mx-auto p-6 space-y-7">
       <PanelErrorBoundary name="overview"><OverviewPanel ctx={ctx} /></PanelErrorBoundary>
       <PanelErrorBoundary name="attendance"><AttendancePanel ctx={ctx} /></PanelErrorBoundary>
       <PanelErrorBoundary name="points"><PointsPanel ctx={ctx} /></PanelErrorBoundary>
       <PanelErrorBoundary name="reports"><ReportsPanel ctx={ctx} /></PanelErrorBoundary>
+      <PanelErrorBoundary name="schedule"><SchedulePanel ctx={ctx} role={role} /></PanelErrorBoundary>
       <PanelErrorBoundary name="management"><ManagementPanel ctx={ctx} role={role} /></PanelErrorBoundary>
       {role === "manager" && <PanelErrorBoundary name="referrals"><ReferralsPanel ctx={ctx} /></PanelErrorBoundary>}
       {role === "manager" && <PanelErrorBoundary name="settings"><SettingsPanel ctx={ctx} /></PanelErrorBoundary>}

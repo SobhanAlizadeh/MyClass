@@ -12,6 +12,8 @@ import {
   listSchoolsWithStats, createTenantSchool, updateTenantSchool, deleteTenantSchool,
   listSchoolUsers, createSchoolUser, setUserPassword, toggleUserActive, deleteUserById, superStats,
   getDefaultPublicSchool, assertTenantOwned, getSchoolUserOwned, countActiveManagers,
+  listAcademicYears, createAcademicYear, setActiveAcademicYear, deleteAcademicYear,
+  listScheduleSlots, setScheduleSlot, promotionPreview, promotionApply,
 } from "./db-v2";
 import { revokeTelegramInviteLink, loadTgCfg, testBotToken, saveSchoolBotConfig, registerSchoolWebhook, getSchoolWebhookInfo, disconnectSchoolBot } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -167,7 +169,7 @@ export const appRouter = router({
       const schoolId = ctx.schoolId;
       // سوپرادمین ناظر: نخستین مدرسه فعال را نشان بده (فقط برای عیب‌یابی)
       if (schoolId == null) {
-        return getDefaultPublicSchool().then((s: { id: number } | undefined) => s ? getDashboardData(s.id) : { schools: [], classes: [], teams: [], students: [], attendance: [], subjects: [], grades: [], activities: [] });
+        return getDefaultPublicSchool().then((s: { id: number } | undefined) => s ? getDashboardData(s.id) : { schools: [], classes: [], teams: [], students: [], attendance: [], subjects: [], grades: [], activities: [], academicYears: [], activeYearId: null });
       }
       return getDashboardData(schoolId);
     }),
@@ -175,7 +177,7 @@ export const appRouter = router({
     addClass: schedulerProcedure.input(z.object({ name: z.string().min(1), grade: z.string().optional(), schoolYear: z.string().optional() })).mutation(({ ctx, input }) => createClass({ ...input, schoolId: ctx.schoolId ?? null })),
     addTeam: schedulerProcedure.input(z.object({ classId: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createTeam(input); }),
     addStudent: schedulerProcedure.input(z.object({ classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createStudent(input); }),
-    attendance: teacherProcedure.input(z.object({ studentId: z.number(), date, status: z.enum(["present", "absent", "late", "excused"]), note: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveAttendance(input); }),
+    attendance: teacherProcedure.input(z.object({ studentId: z.number(), date, status: z.enum(["present", "absent", "late", "excused"]), note: z.string().optional(), period: z.number().int().min(1).max(10).nullable().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveAttendance(input); }),
     addSubject: teacherProcedure.input(z.object({ classId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createSubject(input); }),
     updateSubject: teacherProcedure.input(z.object({ id: z.number(), classId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return updateSubject(input); }),
     deleteSubject: teacherProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteSubject(input.id)),
@@ -192,6 +194,40 @@ export const appRouter = router({
     deleteClass: managerOnlyProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.id); return deleteClass(input.id); }),
     deleteTeam: schedulerProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "team", input.id); return deleteTeam(input.id); }),
     deleteStudent: schedulerProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.id); return deleteStudent(input.id); }),
+    // ——— فاز ۲: سال تحصیلی ———
+    yearsList: schoolAnyProcedure.query(({ ctx }) => ctx.schoolId == null ? [] : listAcademicYears(ctx.schoolId)),
+    yearCreate: schedulerProcedure.input(z.object({ title: z.string().min(2).max(40), startDate: z.string().max(10).optional(), endDate: z.string().max(10).optional() })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return createAcademicYear(ctx.schoolId, input);
+    }),
+    yearSetActive: schedulerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return setActiveAcademicYear(ctx.schoolId, input.id);
+    }),
+    yearDelete: schedulerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return deleteAcademicYear(ctx.schoolId, input.id);
+    }),
+    // ——— فاز ۲: برنامه هفتگی ———
+    scheduleList: schoolAnyProcedure.input(z.object({ classId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) return [];
+      await assertTenantOwned(ctx.schoolId, "class", input.classId);
+      return listScheduleSlots(ctx.schoolId, input.classId);
+    }),
+    scheduleSet: schedulerProcedure.input(z.object({ classId: z.number().int().positive(), dayOfWeek: z.number().int().min(0).max(5), period: z.number().int().min(1).max(10), subjectId: z.number().int().positive().nullable() })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ویرایش برنامه فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "class", input.classId);
+      return setScheduleSlot(ctx.schoolId, input);
+    }),
+    // ——— فاز ۲: ویزارد ارتقا ———
+    promotionPreview: schedulerProcedure.input(z.object({ fromYearId: z.number().int().positive().nullable(), toYearId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) return { fromClasses: [], toYearClasses: [] };
+      return promotionPreview(ctx.schoolId, input);
+    }),
+    promotionApply: schedulerProcedure.input(z.object({ fromYearId: z.number().int().positive().nullable(), toYearId: z.number().int().positive(), mappings: z.array(z.object({ fromClassId: z.number().int().positive(), mode: z.enum(["promote", "graduate"]), toClassId: z.number().int().positive().nullable().optional(), toClassName: z.string().max(120).nullable().optional() })).min(1) })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ارتقا فقط از پنل مدرسه انجام می‌شود" });
+      return promotionApply(ctx.schoolId, input);
+    }),
   }),
   // پنل سوپرادمین — مدیریت مدارس/اشتراک/کاربران (ثبت‌نام عمومی وجود ندارد؛ فقط از اینجا بعد از پرداخت)
   superadmin: router({

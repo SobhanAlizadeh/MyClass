@@ -1,14 +1,24 @@
-import { and, asc, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne } from "drizzle-orm";
 import { connect } from "@tidbcloud/serverless";
 import { drizzle } from "drizzle-orm/tidb-serverless";
 import { TRPCError } from "@trpc/server";
-import { InsertUser, users, schools, classes, teams, students, attendance, subjects, grades, activities, studentTeamTransfers } from "../drizzle/schema";
+import { InsertUser, users, schools, classes, teams, students, attendance, subjects, grades, activities, studentTeamTransfers, academicYears } from "../drizzle/schema";
 import { getEnv } from './_core/env';
 import { sql } from "drizzle-orm";
 
 // TiDB Cloud Serverless HTTP driver — works in Node (self-hosted) AND Cloudflare Workers (no TCP needed).
 let _db: ReturnType<typeof drizzle> | null = null;
-export async function getDb() { if (!_db && process.env.DATABASE_URL) { try { _db = drizzle(connect({ url: process.env.DATABASE_URL })); } catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; } } return _db; }
+export async function getDb() {
+  if (!_db && process.env.DATABASE_URL) {
+    try {
+      _db = drizzle(connect({ url: process.env.DATABASE_URL }));
+      // خودترمیم اسکیما در پس‌زمینه (idempotent) — مسیر اصلی همان اسکریپت‌های مهاجرت است؛
+      // این فقط برای محیط‌هایی است که اسکریپت رویشان اجرا نشده (فاز ۲: period/graduated/schedule_slots)
+      void import("./db-v2").then(v2 => v2.getV2Conn()).catch(() => {});
+    } catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; }
+  }
+  return _db;
+}
 
 // --- Duplicate (uniqueness) guards for the management section -----------------
 // Normalize Persian text: collapse spaces + unify Arabic ي/ك with Persian ی/ک.
@@ -40,7 +50,7 @@ export function distributeTeamPoints(total: number, memberCount: number) {
   return Array.from({ length: memberCount }, (_, index) => (baseScaled + (index < Math.abs(remainderScaled) ? Math.sign(remainderScaled) : 0)) / precision);
 }
 // v2: همه کوئری‌ها بر اساس مدرسه کاربر (tenant scoping) — schoolId اجباری است
-export async function getDashboardData(schoolId: number) { const db = await getDb(); if (!db) return { schools: [], classes: [], teams: [], students: [], attendance: [], subjects: [], grades: [], activities: [] }; const schoolScope = eq(schools.id, schoolId); const [schoolRows, classRows, teamRows, studentRows, attendanceRows, subjectRows, gradeRows, activityRows, transferRows] = await Promise.all([db.select().from(schools).where(schoolScope), db.select().from(classes).where(eq(classes.schoolId, schoolId)), db.select().from(teams).where(eq(teams.schoolId, schoolId)), db.select().from(students).where(eq(students.schoolId, schoolId)), db.select().from(attendance).where(eq(attendance.schoolId, schoolId)).orderBy(desc(attendance.date), desc(attendance.id)).limit(200), db.select().from(subjects).where(eq(subjects.schoolId, schoolId)).orderBy(desc(subjects.id)).limit(200), db.select().from(grades).where(eq(grades.schoolId, schoolId)).orderBy(desc(grades.date)).limit(200), db.select().from(activities).where(eq(activities.schoolId, schoolId)).orderBy(desc(activities.date), desc(activities.id)).limit(200), db.select().from(studentTeamTransfers).where(eq(studentTeamTransfers.schoolId, schoolId)).orderBy(desc(studentTeamTransfers.createdAt), desc(studentTeamTransfers.id)).limit(200)]); const uniqueAttendanceRows = attendanceRows.filter((row, index, rows) => index === rows.findIndex(other => other.studentId === row.studentId && other.date === row.date)); return { schools: schoolRows, classes: classRows, teams: teamRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), students: studentRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), attendance: uniqueAttendanceRows, subjects: subjectRows, grades: gradeRows, activities: activityRows, teamTransfers: transferRows }; }
+export async function getDashboardData(schoolId: number) { const db = await getDb(); if (!db) return { schools: [], classes: [], teams: [], students: [], attendance: [], subjects: [], grades: [], activities: [], academicYears: [], activeYearId: null }; const schoolScope = eq(schools.id, schoolId); const [schoolRows, classRows, teamRows, studentRows, attendanceRows, subjectRows, gradeRows, activityRows, transferRows, yearRows] = await Promise.all([db.select().from(schools).where(schoolScope), db.select().from(classes).where(eq(classes.schoolId, schoolId)), db.select().from(teams).where(eq(teams.schoolId, schoolId)), db.select().from(students).where(and(eq(students.schoolId, schoolId), eq(students.graduated, 0))), db.select().from(attendance).where(eq(attendance.schoolId, schoolId)).orderBy(desc(attendance.date), desc(attendance.id)).limit(600), db.select().from(subjects).where(eq(subjects.schoolId, schoolId)).orderBy(desc(subjects.id)).limit(200), db.select().from(grades).where(eq(grades.schoolId, schoolId)).orderBy(desc(grades.date)).limit(200), db.select().from(activities).where(eq(activities.schoolId, schoolId)).orderBy(desc(activities.date), desc(activities.id)).limit(200), db.select().from(studentTeamTransfers).where(eq(studentTeamTransfers.schoolId, schoolId)).orderBy(desc(studentTeamTransfers.createdAt), desc(studentTeamTransfers.id)).limit(200), db.select().from(academicYears).where(eq(academicYears.schoolId, schoolId)).orderBy(desc(academicYears.id))]); const uniqueAttendanceRows = attendanceRows.filter((row, index, rows) => index === rows.findIndex(other => other.studentId === row.studentId && other.date === row.date && (other.period ?? null) === (row.period ?? null))); return { schools: schoolRows, classes: classRows, teams: teamRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), students: studentRows.map(r => ({ ...r, totalPoints: round2(r.totalPoints) })), attendance: uniqueAttendanceRows, subjects: subjectRows, grades: gradeRows, activities: activityRows, teamTransfers: transferRows, academicYears: yearRows, activeYearId: (yearRows.find(y => y.active === 1)?.id ?? null) }; }
 export async function createSchool(input: { name: string; address?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
@@ -82,7 +92,13 @@ export async function createClass(input: { schoolId: number | null; name: string
   if (!db) throw new Error("Database unavailable");
   const name = normFa(input.name);
   await assertNoDuplicate(db, classes, and(dupClause(classes.name, name), input.schoolId != null ? eq(classes.schoolId, input.schoolId) : sql`1=1`), `کلاسی با نام «${name}» قبلاً ثبت شده است`);
-  const ids = await db.insert(classes).values({ ...input, name }).$returningId();
+  // فاز ۲: اگر سالی مشخص نشده، به سال تحصیلیِ فعالِ مدرسه وصل شود
+  let academicYearId = input.academicYearId ?? null;
+  if (academicYearId == null && input.schoolId != null) {
+    const yrs = await db.select({ id: academicYears.id }).from(academicYears).where(and(eq(academicYears.schoolId, input.schoolId), eq(academicYears.active, 1))).limit(1);
+    academicYearId = yrs[0]?.id ?? null;
+  }
+  const ids = await db.insert(classes).values({ ...input, name, academicYearId }).$returningId();
   return { id: Number((ids as Array<{ id: number }>)[0]?.id), name };
 }
 export async function updateClass(input: { id: number; schoolId?: number | null; name: string; grade?: string; schoolYear?: string }) {
@@ -140,14 +156,15 @@ export async function updateStudent(input: { id: number; classId: number; teamId
 export async function deleteClass(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const memberRows = await db.select({ id: students.id }).from(students).where(eq(students.classId, id)); const teamRows = await db.select({ id: teams.id }).from(teams).where(eq(teams.classId, id)); for (const row of memberRows) await deleteStudent(row.id); for (const row of teamRows) await db.delete(activities).where(eq(activities.teamId, row.id)); await db.delete(teams).where(eq(teams.classId, id)); await db.delete(classes).where(eq(classes.id, id)); }
 export async function deleteTeam(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.update(students).set({ teamId: null }).where(eq(students.teamId, id)); await db.delete(activities).where(eq(activities.teamId, id)); await db.delete(teams).where(eq(teams.id, id)); }
 export async function deleteStudent(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.delete(attendance).where(eq(attendance.studentId, id)); await db.delete(grades).where(eq(grades.studentId, id)); await db.delete(activities).where(eq(activities.studentId, id)); await db.delete(students).where(eq(students.id, id)); }
-export async function saveAttendance(input: { studentId: number; date: string; status: "present" | "absent" | "late" | "excused"; note?: string }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const stu = await db.select({ schoolId: students.schoolId }).from(students).where(eq(students.id, input.studentId)).limit(1); const existing = await db.select().from(attendance).where(and(eq(attendance.studentId, input.studentId), eq(attendance.date, input.date))).limit(1); if (existing.length > 0) return existing[0]; return db.transaction(async tx => { await tx.insert(attendance).values({ ...input, schoolId: stu[0]?.schoolId ?? null }); if (input.status === "absent") { const row = await tx.select({ teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); await tx.insert(activities).values({ studentId: input.studentId, teamId: row[0]?.teamId ?? null, date: input.date, title: input.note?.trim() ? `غیبت — ${input.note.trim()}` : "غیبت", kind: "negative", points: -3, schoolId: stu[0]?.schoolId ?? null }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - 3` }).where(eq(students.id, input.studentId)); if (row[0]?.teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - 3` }).where(eq(teams.id, row[0].teamId)); } return input; }); }
+export async function saveAttendance(input: { studentId: number; date: string; status: "present" | "absent" | "late" | "excused"; note?: string; period?: number | null }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const stu = await db.select({ schoolId: students.schoolId }).from(students).where(eq(students.id, input.studentId)).limit(1); const period = input.period ?? null; const existing = await db.select().from(attendance).where(and(eq(attendance.studentId, input.studentId), eq(attendance.date, input.date), period == null ? isNull(attendance.period) : eq(attendance.period, period))).limit(1); if (existing.length > 0) return existing[0]; const absentPenalty = period == null ? 3 : 1; const absentTitle = period == null ? (input.note?.trim() ? `غیبت — ${input.note.trim()}` : "غیبت") : `غیبت زنگ ${period}`; return db.transaction(async tx => { await tx.insert(attendance).values({ studentId: input.studentId, date: input.date, status: input.status, note: input.note, period, schoolId: stu[0]?.schoolId ?? null }); if (input.status === "absent") { const row = await tx.select({ teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); await tx.insert(activities).values({ studentId: input.studentId, teamId: row[0]?.teamId ?? null, date: input.date, title: absentTitle, kind: "negative", points: -absentPenalty, schoolId: stu[0]?.schoolId ?? null }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - ${absentPenalty}` }).where(eq(students.id, input.studentId)); if (row[0]?.teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${absentPenalty}` }).where(eq(teams.id, row[0].teamId)); } return input; }); }
 export async function createSubject(input: { classId: number; name: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const name = normFa(input.name);
   const cls = await db.select({ schoolId: classes.schoolId }).from(classes).where(eq(classes.id, input.classId)).limit(1);
   await assertNoDuplicate(db, subjects, and(eq(subjects.classId, input.classId), dupClause(subjects.name, name)), `در این کلاس درسی با نام «${name}» قبلاً ثبت شده است`);
-  await db.insert(subjects).values({ ...input, name, schoolId: cls[0]?.schoolId ?? null });
+  const ids = await db.insert(subjects).values({ ...input, name, schoolId: cls[0]?.schoolId ?? null }).$returningId();
+  return { id: Number((ids as Array<{ id: number }>)[0]?.id), name };
 }
 export async function updateSubject(input: { id: number; classId: number; name: string }) {
   const db = await getDb();
@@ -182,7 +199,7 @@ export async function getPublicClasses(schoolCode?: string) {
   }
   const [classRows, studentRows] = await Promise.all([
     db.select({ id: classes.id, name: classes.name, schoolId: classes.schoolId }).from(classes),
-    db.select({ classId: students.classId }).from(students),
+    db.select({ classId: students.classId }).from(students).where(eq(students.graduated, 0)),
   ]);
   // فیلتر کلاس‌ها بر اساس مدرسه انتخابی (کد مدرسه یا نخستین مدرسه فعال)
   let schoolIdFilter: number | null = null;
@@ -209,7 +226,7 @@ export async function getPublicClassStudents(classId: number) {
     .select({ id: students.id, firstName: students.firstName, lastName: students.lastName, totalPoints: students.totalPoints, teamName: teams.name })
     .from(students)
     .leftJoin(teams, eq(students.teamId, teams.id))
-    .where(eq(students.classId, classId));
+    .where(and(eq(students.classId, classId), eq(students.graduated, 0)));
   return rows.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName, totalPoints: round2(r.totalPoints), teamName: r.teamName ?? null }));
 }
 
