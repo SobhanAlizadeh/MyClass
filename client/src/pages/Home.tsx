@@ -19,14 +19,15 @@ import { PointsPanel } from "@/panels/PointsPanel";
 import { ReportsPanel } from "@/panels/ReportsPanel";
 import { ManagementPanel } from "@/panels/ManagementPanel";
 import { ReferralsPanel } from "@/panels/ReferralsPanel";
+import { SettingsPanel } from "@/panels/SettingsPanel";
 import { PanelButton } from "@/panels/shared";
 
-type PanelKey = "overview" | "attendance" | "points" | "reports" | "management" | "referrals";
+type PanelKey = "overview" | "attendance" | "points" | "reports" | "management" | "referrals" | "settings";
 const ROLE_TABS: Record<string, PanelKey[]> = {
-  manager: ["overview", "attendance", "points", "reports", "referrals", "management"],
+  manager: ["overview", "attendance", "points", "reports", "referrals", "management", "settings"],
   scheduler: ["overview", "management"],
   teacher: ["overview", "attendance", "points", "reports"],
-  super_admin: ["overview", "attendance", "points", "reports", "referrals", "management"],
+  super_admin: ["overview", "attendance", "points", "reports", "referrals", "management", "settings"],
 };
 
 export default function Home() {
@@ -35,7 +36,7 @@ export default function Home() {
   const { data, isLoading } = trpc.school.dashboard.useQuery(undefined, { enabled: Boolean(user) });
   const schoolInfo = trpc.auth.school.useQuery(undefined, { enabled: Boolean(user) });
   const utils = trpc.useUtils();
-  const [activePanel, setActivePanel] = useState<"overview" | "attendance" | "points" | "reports" | "management" | "referrals">(() => { const saved = typeof window !== "undefined" ? window.sessionStorage.getItem("classroom-active-panel") : null; return (saved as "overview" | "attendance" | "points" | "reports" | "management" | "referrals") || "overview"; });
+  const [activePanel, setActivePanel] = useState<PanelKey>(() => { const saved = typeof window !== "undefined" ? window.sessionStorage.getItem("classroom-active-panel") : null; return (saved as PanelKey) || "overview"; });
   useEffect(() => { window.sessionStorage.setItem("classroom-active-panel", activePanel); }, [activePanel]);
   const [selectedClass, setSelectedClass] = useState("all");
   const [entryClassId, setEntryClassId] = useState("");
@@ -259,6 +260,7 @@ export default function Home() {
     studentClassId, studentTeamId, reportScope, reportClassId, reportTeamId, reportStudentId,
     editing, editName, editTeamId,
     setSelectedClass, setEntryClassId, setSpendClassId, setAttendanceClassId, setDate, setTarget,
+    goToPanel: (p: PanelKey) => setActivePanel(p),
     setStudentId, setTeamId, setActivityKind, setActivityTitle, setPoints, setSpendTarget,
     setSpendStudentId, setSpendTeamId, setSpendPoints, setSpendNote, setGradeTitle, setGradeSubjectId,
     setGradeType, setEditingGradeId, setEditingGradeType, setEditingGradeSubjectId,
@@ -278,7 +280,7 @@ export default function Home() {
 
   return <div dir="rtl" data-panel={activePanel} className="app-shell min-h-screen bg-[#f4f7f6] text-slate-900">
     <header className="border-b bg-white/90 backdrop-blur sticky top-0 z-20"><div className="max-w-[1440px] mx-auto px-6 h-20 flex items-center justify-between"><div className="flex items-center gap-3"><div className="h-11 w-11 rounded-2xl bg-[#0f766e] text-white grid place-items-center shadow-lg"><School className="h-6 w-6" /></div><div><p className="font-black text-xl tracking-tight">{school?.name ?? "دفترکلاس"}</p><p className="text-xs text-slate-500">پنل {roleLabels[role] ?? "کاربر"} · دفترکلاس</p></div></div><div className="flex items-center gap-3">{school && <div className="hidden md:block text-xs rounded-xl bg-teal-50 text-teal-800 px-3 py-1.5 font-semibold">اشتراک تا {school.subscriptionEnd ?? "—"}{school.daysLeft != null ? ` · ${school.daysLeft} روز` : ""}</div>}<div className="hidden sm:block text-left"><p className="text-sm font-semibold">امروز، {formatJalali(new Date())}</p><p className="text-xs text-slate-500">{user?.displayName ?? "کاربر دفترکلاس"}</p></div><Button type="button" variant="outline" size="icon" onClick={() => toggleTheme?.()} aria-label={theme === "dark" ? "فعال‌سازی تم روشن" : "فعال‌سازی تم تاریک"} title={theme === "dark" ? "تم روشن" : "تم تاریک"} className="rounded-xl border-slate-200 dark:border-slate-700">{theme === "dark" ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-slate-700" />}</Button><Button type="button" variant="outline" size="sm" onClick={() => { void logout(); }} className="rounded-xl border-slate-200">خروج</Button></div></div></header>
-    <nav className="mobile-panel-nav max-w-[1440px] mx-auto px-4 sm:px-6 pt-3" aria-label="بخش‌های دفترکلاس"><div className="grid gap-1 rounded-2xl bg-white p-1.5 shadow-sm border" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>{tabs.includes("overview") && <PanelButton active={activePanel === "overview"} onClick={() => setActivePanel("overview")}>نمای کلی</PanelButton>}{tabs.includes("attendance") && <PanelButton active={activePanel === "attendance"} onClick={() => setActivePanel("attendance")}>ثبت</PanelButton>}{tabs.includes("points") && <PanelButton active={activePanel === "points"} onClick={() => setActivePanel("points")}>امتیاز</PanelButton>}{tabs.includes("reports") && <PanelButton active={activePanel === "reports"} onClick={() => setActivePanel("reports")}>گزارش</PanelButton>}{tabs.includes("referrals") && <PanelButton active={activePanel === "referrals"} onClick={() => setActivePanel("referrals")}>دعوت‌ها</PanelButton>}{tabs.includes("management") && <PanelButton active={activePanel === "management"} onClick={() => setActivePanel("management")}>مدیریت</PanelButton>}</div></nav>
+    <nav className="mobile-panel-nav max-w-[1440px] mx-auto px-4 sm:px-6 pt-3" aria-label="بخش‌های دفترکلاس"><div className="grid gap-1 rounded-2xl bg-white p-1.5 shadow-sm border" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>{tabs.includes("overview") && <PanelButton active={activePanel === "overview"} onClick={() => setActivePanel("overview")}>نمای کلی</PanelButton>}{tabs.includes("attendance") && <PanelButton active={activePanel === "attendance"} onClick={() => setActivePanel("attendance")}>ثبت</PanelButton>}{tabs.includes("points") && <PanelButton active={activePanel === "points"} onClick={() => setActivePanel("points")}>امتیاز</PanelButton>}{tabs.includes("reports") && <PanelButton active={activePanel === "reports"} onClick={() => setActivePanel("reports")}>گزارش</PanelButton>}{tabs.includes("referrals") && <PanelButton active={activePanel === "referrals"} onClick={() => setActivePanel("referrals")}>دعوت‌ها</PanelButton>}{tabs.includes("management") && <PanelButton active={activePanel === "management"} onClick={() => setActivePanel("management")}>مدیریت</PanelButton>}{tabs.includes("settings") && <PanelButton active={activePanel === "settings"} onClick={() => setActivePanel("settings")}>تنظیمات</PanelButton>}</div></nav>
     <main className="max-w-[1440px] mx-auto p-6 space-y-7">
       <PanelErrorBoundary name="overview"><OverviewPanel ctx={ctx} /></PanelErrorBoundary>
       <PanelErrorBoundary name="attendance"><AttendancePanel ctx={ctx} /></PanelErrorBoundary>
@@ -286,6 +288,7 @@ export default function Home() {
       <PanelErrorBoundary name="reports"><ReportsPanel ctx={ctx} /></PanelErrorBoundary>
       <PanelErrorBoundary name="management"><ManagementPanel ctx={ctx} role={role} /></PanelErrorBoundary>
       {role === "manager" && <PanelErrorBoundary name="referrals"><ReferralsPanel ctx={ctx} /></PanelErrorBoundary>}
+      {role === "manager" && <PanelErrorBoundary name="settings"><SettingsPanel ctx={ctx} /></PanelErrorBoundary>}
     </main>
   </div>;
 }

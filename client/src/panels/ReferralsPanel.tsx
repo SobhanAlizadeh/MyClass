@@ -2,8 +2,6 @@
 // @ts-nocheck — auto-extracted verbatim JSX; shared ctx is typed as any.
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { today, Kind, GradeType, gradeTypeLabels } from "./shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -16,8 +14,12 @@ import { buildReferralPrintHtml, printHtmlInIframe } from "@/lib/print-report";
 import { JalaliDatePicker, Field, Stat, StudentSelect, TeamSelect, QuickButton, Empty, gradeTypeLabels, SearchInput, matchesQuery } from "./shared";
 import { Check, ClipboardList, Edit3, Medal, Printer, Send, Settings2, Share2, Sparkles, Trash2, TrendingDown, TrendingUp, Users, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { AlertTriangle, ArrowLeft } from "lucide-react";
 export function ReferralsPanel({ ctx }: { ctx: any }) {
   const schoolName = ctx.schools[0]?.name ?? "دفترکلاس";
+  // وضعیت اتصال بات تلگرام — اگر وصل نباشد این بخش هیچ‌وقت پر نمی‌شود؛ باید از تب تنظیمات وصل شود
+  const tgInfo = trpc.telegram.info.useQuery();
+  const botConnected = Boolean(tgInfo.data?.configured);
   // گزارش کامل: لینک‌ها + آیدی تلگرام صاحب هر لینک + دعوت‌شدگان + دانش‌آموزان بدون لینک (همان منبع چاپ)
   const { data } = trpc.referrals.report.useQuery();
   const settings = trpc.referrals.settings.useQuery();
@@ -103,6 +105,12 @@ export function ReferralsPanel({ ctx }: { ctx: any }) {
   };
   return (
     <section className="mobile-panel panel-referrals space-y-5">
+      {!tgInfo.isLoading && !botConnected && !tgInfo.data?.observer && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm font-bold text-amber-800 flex items-start gap-2"><AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" /> بات تلگرام مدرسه وصل نیست؛ برای همین این بخش خالی است. توکن بات و آیدی کانال را در تب «تنظیمات» ذخیره کنید تا لینک‌های دعوت ساخته شوند.</p>
+          <Button size="sm" className="shrink-0" onClick={() => ctx.goToPanel?.("settings")}>رفتن به تنظیمات <ArrowLeft className="mr-1 h-4 w-4" /></Button>
+        </div>
+      )}
       <Card className="border-0 shadow-sm rounded-2xl">
         <CardHeader>
           <div className="flex items-center justify-between gap-3 flex-wrap">

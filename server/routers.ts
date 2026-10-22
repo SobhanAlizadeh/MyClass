@@ -13,7 +13,7 @@ import {
   listSchoolUsers, createSchoolUser, setUserPassword, toggleUserActive, deleteUserById, superStats,
   getDefaultPublicSchool, assertTenantOwned, getSchoolUserOwned, countActiveManagers,
 } from "./db-v2";
-import { revokeTelegramInviteLink } from "./telegram";
+import { revokeTelegramInviteLink, loadTgCfg, testBotToken, saveSchoolBotConfig, registerSchoolWebhook, getSchoolWebhookInfo, disconnectSchoolBot } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const lockKeyForSchool = (schoolCode: string, username: string) => `login:${schoolCode.trim().toUpperCase()}:${username.trim().toLowerCase()}`;
 const lockKeyForSuper = (username: string) => `login:super:${username.trim().toLowerCase()}`;
@@ -109,16 +109,56 @@ export const appRouter = router({
   referrals: router({
     list: managerOnlyProcedure.query(({ ctx }) => listReferrals(ctx.schoolId ?? null)),
     report: managerOnlyProcedure.query(({ ctx }) => getReferralReport(ctx.schoolId ?? null)),
-    settings: managerOnlyProcedure.query(() => getReferralSettings()),
-    setPoints: managerOnlyProcedure.input(z.object({ points: z.number().min(0.1).max(1000) })).mutation(({ input }) => setReferralPoints(input.points)),
-    setLeavePenalty: managerOnlyProcedure.input(z.object({ enabled: z.boolean() })).mutation(({ input }) => setReferralLeavePenalty(input.enabled)),
+    // v2: تنظیمات امتیاز دعوت per-school است (جدول school_settings)
+    settings: managerOnlyProcedure.query(({ ctx }) => getReferralSettings(ctx.schoolId ?? null)),
+    setPoints: managerOnlyProcedure.input(z.object({ points: z.number().min(0.1).max(1000) })).mutation(({ ctx, input }) => setReferralPoints(input.points, ctx.schoolId ?? null)),
+    setLeavePenalty: managerOnlyProcedure.input(z.object({ enabled: z.boolean() })).mutation(({ ctx, input }) => setReferralLeavePenalty(input.enabled, ctx.schoolId ?? null)),
     deleteReferral: managerOnlyProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       await assertTenantOwned(ctx.schoolId, "referral", input.id);
       const info = await deleteReferral(input.id);
       if (!info) return { success: false as const, revoked: false, code: "", message: "این لینک قبلاً حذف شده یا وجود ندارد" };
       let revoked = false;
-      if (info.inviteLink) { try { revoked = await revokeTelegramInviteLink(info.inviteLink); } catch { revoked = false; } }
+      if (info.inviteLink) { try { revoked = await revokeTelegramInviteLink(await loadTgCfg(ctx.schoolId ?? null), info.inviteLink); } catch { revoked = false; } }
       return { success: true as const, revoked, code: info.code };
+    }),
+  }),
+  // اتصال بات تلگرام مدرسه — فقط مدیر؛ توکن per-school در school_settings ذخیره می‌شود
+  // و وب‌هوک بات به همین سرور (با سکرت اختصاصی مدرسه) ثبت می‌گردد.
+  telegram: router({
+    info: managerOnlyProcedure.query(async ({ ctx }) => {
+      const schoolId = ctx.schoolId;
+      // سوپرادمین ناظر (بدون مدرسه): اتصالی برای نمایش نیست
+      if (schoolId == null) return { configured: false, botUsername: null, channelId: null, tokenTail: null, updatedAt: null, webhook: null, observer: true };
+      const cfg = await loadTgCfg(schoolId);
+      const row = cfg.token ? await import("./db").then(m => m.getSchoolTelegram(schoolId)) : null;
+      const tokenTail = row?.botToken ? row.botToken.slice(-6) : null;
+      const webhook = cfg.token ? await getSchoolWebhookInfo(schoolId).catch(() => null) : null;
+      return {
+        configured: Boolean(cfg.token && cfg.channelId),
+        botUsername: row?.botUsername ?? null,
+        channelId: row?.channelId ?? null,
+        tokenTail,
+        updatedAt: row?.updatedAt ?? null,
+        webhook: webhook ? { url: webhook.url ?? null, pendingUpdateCount: Number(webhook.pending_update_count ?? 0), lastErrorMessage: webhook.last_error_message ?? null, lastErrorDate: webhook.last_error_date ?? null } : null,
+      };
+    }),
+    test: managerOnlyProcedure.input(z.object({ botToken: z.string().min(10) })).mutation(async ({ input }) => testBotToken(input.botToken)),
+    save: managerOnlyProcedure.input(z.object({ botToken: z.string().min(10), channelId: z.string().min(1), registerWebhook: z.boolean().default(true) })).mutation(async ({ ctx, input }) => {
+      const schoolId = ctx.schoolId;
+      if (schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "اتصال بات تلگرام فقط از پنل مدرسه توسط مدیر مدرسه انجام می‌شود" });
+      const saved = await saveSchoolBotConfig(schoolId, input.botToken, input.channelId);
+      if (!saved.ok) return saved;
+      let webhook: { ok: boolean; url?: string; error?: string } | null = null;
+      if (input.registerWebhook) webhook = await registerSchoolWebhook(schoolId);
+      return { ...saved, webhook };
+    }),
+    registerWebhook: managerOnlyProcedure.mutation(({ ctx }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return registerSchoolWebhook(ctx.schoolId);
+    }),
+    disconnect: managerOnlyProcedure.mutation(({ ctx }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return disconnectSchoolBot(ctx.schoolId);
     }),
   }),
   // داده‌های مدرسه — همه اسکوپ‌شده به مدرسه کاربر

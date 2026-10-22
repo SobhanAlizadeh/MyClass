@@ -321,30 +321,122 @@ const REFERRAL_LEAVE_PENALTY_KEY = "referral_leave_penalty";
 function clampReferralPoints(n: number): number { return Math.max(0.1, Math.min(1000, round2(n))); }
 export type ReferralSettings = { points: number; pointsIsDefault: boolean; leavePenalty: boolean };
 
-// امتیاز دعوت مؤثر: تنظیم ادمین ← سکرت env ← پیش‌فرض ۳
-export async function getReferralSettings(): Promise<ReferralSettings> {
+// --- تنظیمات per-school (نسخه ۲ چندمدرسه‌ای) ---------------------------------
+// هر مدرسه توکن بات/کانال تلگرام و امتیاز دعوتِ خودش را دارد؛ قبل از نسخه ۲ همه‌چیز
+// env یا app_settings سراسری بود که برای SaaS درست نیست. جدول به‌صورت تنبل ساخته می‌شود.
+export type SchoolTelegramConfig = { botToken: string | null; channelId: string | null; webhookSecret: string | null; botUsername: string | null; webhookUrl: string | null; updatedAt: number | null };
+let _schoolSettingsReady: Promise<unknown> | null = null;
+function ensureSchoolSettingsTable(conn: ReturnType<typeof connect>) {
+  if (!_schoolSettingsReady) _schoolSettingsReady = (async () => {
+    await conn.execute("CREATE TABLE IF NOT EXISTS school_settings (school_id INT PRIMARY KEY, bot_token TEXT NULL, channel_id VARCHAR(128) NULL, webhook_secret VARCHAR(64) NULL, bot_username VARCHAR(64) NULL, webhook_url VARCHAR(255) NULL, referral_points DECIMAL(10,2) NULL, referral_leave_penalty TINYINT NULL, updated_at BIGINT NOT NULL DEFAULT 0)");
+    // مهاجرت تنجل برای جدول‌های ساخته‌شده در نسخه‌های میانی
+    await conn.execute("ALTER TABLE school_settings ADD COLUMN bot_username VARCHAR(64) NULL").catch(() => {});
+    await conn.execute("ALTER TABLE school_settings ADD COLUMN webhook_url VARCHAR(255) NULL").catch(() => {});
+  })().catch(e => { _schoolSettingsReady = null; throw e; });
+  return _schoolSettingsReady;
+}
+
+export async function getSchoolTelegram(schoolId: number): Promise<SchoolTelegramConfig | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureSchoolSettingsTable(conn);
+  const res: any = await conn.execute("SELECT bot_token, channel_id, webhook_secret, bot_username, webhook_url, updated_at FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  if (!row) return null;
+  return {
+    botToken: row.bot_token != null ? String(row.bot_token) : null,
+    channelId: row.channel_id != null ? String(row.channel_id) : null,
+    webhookSecret: row.webhook_secret != null ? String(row.webhook_secret) : null,
+    botUsername: row.bot_username != null ? String(row.bot_username) : null,
+    webhookUrl: row.webhook_url != null ? String(row.webhook_url) : null,
+    updatedAt: Number(row.updated_at ?? 0) || null,
+  };
+}
+
+// ذخیره پیکربندی تلگرام مدرسه — فیلدهای ارسال‌نشده حفظ می‌شوند (webhook_secret فقط اگر جدید باشد عوض می‌شود)
+export async function setSchoolTelegram(schoolId: number, cfg: { botToken?: string | null; channelId?: string | null; botUsername?: string | null; webhookSecret?: string | null; webhookUrl?: string | null }): Promise<void> {
+  const conn = getRawConn();
+  if (!conn) throw new Error("Database unavailable");
+  await ensureSchoolSettingsTable(conn);
+  await conn.execute(
+    "INSERT INTO school_settings (school_id, bot_token, channel_id, bot_username, webhook_secret, webhook_url, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE bot_token = VALUES(bot_token), channel_id = VALUES(channel_id), bot_username = VALUES(bot_username), webhook_secret = COALESCE(VALUES(webhook_secret), webhook_secret), webhook_url = COALESCE(VALUES(webhook_url), webhook_url), updated_at = VALUES(updated_at)",
+    [schoolId, cfg.botToken ?? null, cfg.channelId ?? null, cfg.botUsername ?? null, cfg.webhookSecret ?? null, cfg.webhookUrl ?? null, Date.now()]
+  );
+}
+
+// قطع اتصال تلگرام مدرسه — توکن/کانال پاک می‌شود؛ webhook_secret برای ابطال وب‌هوک لازم است
+export async function clearSchoolTelegram(schoolId: number): Promise<void> {
+  const conn = getRawConn();
+  if (!conn) throw new Error("Database unavailable");
+  await ensureSchoolSettingsTable(conn);
+  await conn.execute("UPDATE school_settings SET bot_token = NULL, channel_id = NULL, bot_username = NULL, webhook_url = NULL, updated_at = ? WHERE school_id = ?", [Date.now(), schoolId]);
+}
+
+// آیا این توکن بات قبلاً برای مدرسه دیگری ثبت شده؟ (جلوگیری از تصاحب وب‌هوک بین مدارس)
+export async function findSchoolIdByBotToken(token: string, exceptSchoolId?: number): Promise<number | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  await ensureSchoolSettingsTable(conn);
+  const res: any = await conn.execute("SELECT school_id FROM school_settings WHERE bot_token = ? LIMIT 1", [token]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  if (!row) return null;
+  const id = Number(row.school_id);
+  return exceptSchoolId != null && id === exceptSchoolId ? null : id;
+}
+
+// امتیاز دعوت مؤثر: تنظیم مدیر مدرسه ← سکرت env ← پیش‌فرض ۳
+// نسخه ۲: schoolId != null → ستون‌های school_settings (هر مدرسه جدا)؛ null → مسیر قدیمی app_settings
+export async function getReferralSettings(schoolId: number | null = null): Promise<ReferralSettings> {
   const envPts = Number(process.env.TELEGRAM_REFERRAL_POINTS ?? REFERRAL_POINTS);
   const fallback = Number.isFinite(envPts) && envPts > 0 ? clampReferralPoints(envPts) : REFERRAL_POINTS;
+  const fromRow = (ptsRaw: unknown, penRaw: unknown): ReferralSettings => {
+    const dbPts = ptsRaw != null ? Number(ptsRaw) : NaN;
+    const dbValid = Number.isFinite(dbPts) && dbPts > 0;
+    return { points: dbValid ? clampReferralPoints(dbPts) : fallback, pointsIsDefault: !dbValid, leavePenalty: penRaw == null ? true : Number(penRaw) === 1 };
+  };
+  if (schoolId != null) {
+    try {
+      const conn = getRawConn();
+      if (!conn) return { points: fallback, pointsIsDefault: true, leavePenalty: true };
+      await ensureSchoolSettingsTable(conn);
+      const res: any = await conn.execute("SELECT referral_points, referral_leave_penalty FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]);
+      const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+      if (!row) return { points: fallback, pointsIsDefault: true, leavePenalty: true };
+      return fromRow(row.referral_points, row.referral_leave_penalty);
+    } catch {
+      return { points: fallback, pointsIsDefault: true, leavePenalty: true };
+    }
+  }
   try {
     const [rawPts, rawPen] = await Promise.all([getSetting(REFERRAL_POINTS_KEY), getSetting(REFERRAL_LEAVE_PENALTY_KEY)]);
-    const dbPts = rawPts != null ? Number(rawPts) : NaN;
-    const dbValid = Number.isFinite(dbPts) && dbPts > 0;
-    return {
-      points: dbValid ? clampReferralPoints(dbPts) : fallback,
-      pointsIsDefault: !dbValid,
-      leavePenalty: rawPen == null ? true : rawPen === "1",
-    };
+    return fromRow(rawPts, rawPen == null ? null : (rawPen === "1" ? 1 : 0));
   } catch {
     return { points: fallback, pointsIsDefault: true, leavePenalty: true };
   }
 }
-export async function setReferralPoints(points: number): Promise<ReferralSettings> {
-  await setSetting(REFERRAL_POINTS_KEY, String(clampReferralPoints(points)));
-  return getReferralSettings();
+
+export async function setReferralPoints(points: number, schoolId: number | null = null): Promise<ReferralSettings> {
+  const value = String(clampReferralPoints(points));
+  if (schoolId != null) {
+    const conn = getRawConn();
+    if (!conn) throw new Error("Database unavailable");
+    await ensureSchoolSettingsTable(conn);
+    await conn.execute("INSERT INTO school_settings (school_id, referral_points, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE referral_points = VALUES(referral_points), updated_at = VALUES(updated_at)", [schoolId, value, Date.now()]);
+  } else {
+    await setSetting(REFERRAL_POINTS_KEY, value);
+  }
+  return getReferralSettings(schoolId);
 }
-export async function setReferralLeavePenalty(enabled: boolean): Promise<ReferralSettings> {
-  await setSetting(REFERRAL_LEAVE_PENALTY_KEY, enabled ? "1" : "0");
-  return getReferralSettings();
+export async function setReferralLeavePenalty(enabled: boolean, schoolId: number | null = null): Promise<ReferralSettings> {
+  if (schoolId != null) {
+    const conn = getRawConn();
+    if (!conn) throw new Error("Database unavailable");
+    await ensureSchoolSettingsTable(conn);
+    await conn.execute("INSERT INTO school_settings (school_id, referral_leave_penalty, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE referral_leave_penalty = VALUES(referral_leave_penalty), updated_at = VALUES(updated_at)", [schoolId, enabled ? 1 : 0, Date.now()]);
+  } else {
+    await setSetting(REFERRAL_LEAVE_PENALTY_KEY, enabled ? "1" : "0");
+  }
+  return getReferralSettings(schoolId);
 }
 
 let _refTablesReady: Promise<unknown> | null = null;
@@ -368,12 +460,13 @@ function genReferralCode(): string {
 }
 
 // جستجوی دانش‌آموز برای بات: تطبیق کامل → شروع‌شونده → شامل (بعد از نرمال‌سازی فارسی)
-export async function findStudentsByName(query: string): Promise<ReferralCandidate[]> {
+// نسخه ۲: جستجو حتماً به مدرسه صاحب بات محدود می‌شود — وگرنه دانش‌آموز مدرسه دیگر لینک می‌گرفت (نشت بین‌تنانتی)
+export async function findStudentsByName(query: string, schoolId: number | null = null): Promise<ReferralCandidate[]> {
   const db = await getDb();
   if (!db) return [];
   const q = normFa(query);
   if (q.length < 2) return [];
-  const rows = await db.select({ id: students.id, firstName: students.firstName, lastName: students.lastName, className: classes.name }).from(students).leftJoin(classes, eq(students.classId, classes.id));
+  const rows = await db.select({ id: students.id, firstName: students.firstName, lastName: students.lastName, className: classes.name }).from(students).leftJoin(classes, eq(students.classId, classes.id)).where(schoolId != null ? eq(students.schoolId, schoolId) : undefined);
   const scored = rows
     .map(r => {
       const full = normFa(`${r.firstName} ${r.lastName}`);
@@ -447,11 +540,11 @@ export async function getReferralByCode(code: string): Promise<ReferralCore | nu
   return { id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link) };
 }
 
-export async function getLatestReferralByTelegramUser(tgUserId: number): Promise<ReferralCore | null> {
+export async function getLatestReferralByTelegramUser(tgUserId: number, schoolId: number | null = null): Promise<ReferralCore | null> {
   const conn = getRawConn();
   if (!conn) return null;
   await ensureReferralTables(conn);
-  const res: any = await conn.execute("SELECT r.id, r.student_id, r.code, r.invite_link, s.firstName, s.lastName, c.name AS class_name FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId WHERE r.telegram_user_id = ? ORDER BY r.id DESC LIMIT 1", [tgUserId]);
+  const res: any = await conn.execute("SELECT r.id, r.student_id, r.code, r.invite_link, s.firstName, s.lastName, c.name AS class_name FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId WHERE r.telegram_user_id = ?" + (schoolId != null ? " AND s.schoolId = " + Number(schoolId) : "") + " ORDER BY r.id DESC LIMIT 1", [tgUserId]);
   const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
   if (!row) return null;
   return { id: Number(row.id), studentId: Number(row.student_id), studentName: `${row.firstName} ${row.lastName}`, className: row.class_name ?? null, code: String(row.code), inviteLink: String(row.invite_link) };
@@ -483,12 +576,12 @@ export async function countReferralJoins(referralId: number): Promise<number> {
 // خروج عضو دعوت‌شده: آخرین عضویت «فعال» او را پیدا و وضعیتش را left می‌کند.
 // شرط status='active' در UPDATE تضمین می‌کند یک خروج، فقط یک‌بار منجر به کسر شود.
 export type ReferralLeaveInfo = { joinId: number; referralId: number; studentId: number; studentName: string; code: string; referrerChatId: number | null };
-export async function claimReferralLeave(tgUserId: number): Promise<ReferralLeaveInfo | null> {
+export async function claimReferralLeave(tgUserId: number, schoolId: number | null = null): Promise<ReferralLeaveInfo | null> {
   const conn = getRawConn();
   if (!conn) return null;
   await ensureReferralTables(conn);
   const sel: any = await conn.execute(
-    "SELECT j.id AS join_id, j.referral_id, r.student_id, r.code, r.telegram_chat_id, s.firstName, s.lastName FROM referral_joins j JOIN referrals r ON r.id = j.referral_id JOIN students s ON s.id = r.student_id WHERE j.telegram_user_id = ? AND j.status = 'active' ORDER BY j.id DESC LIMIT 1",
+    "SELECT j.id AS join_id, j.referral_id, r.student_id, r.code, r.telegram_chat_id, s.firstName, s.lastName FROM referral_joins j JOIN referrals r ON r.id = j.referral_id JOIN students s ON s.id = r.student_id WHERE j.telegram_user_id = ? AND j.status = 'active'" + (schoolId != null ? " AND s.schoolId = " + Number(schoolId) : "") + " ORDER BY j.id DESC LIMIT 1",
     [tgUserId]
   );
   const row: any = (Array.isArray(sel) ? sel : sel.rows)?.[0];
