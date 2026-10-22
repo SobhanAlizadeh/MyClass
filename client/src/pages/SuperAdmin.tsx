@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { toast } from "sonner";
 import { Lock, LogOut, Plus, RefreshCw, School, ShieldCheck, Trash2, KeyRound, Search, UserPlus, UserCog } from "lucide-react";
 import { SearchInput, matchesQuery } from "@/panels/shared";
+import { formatJalaliShort } from "@/lib/jalali";
 
 type SchoolRow = {
   id: number; name: string; code: string | null; status: string; phone: string | null;
@@ -105,7 +106,7 @@ export default function SuperAdmin() {
           <div className="flex flex-wrap items-center gap-3">
             <button className="flex-1 text-right" onClick={() => setSelected(s.id === selected ? null : s.id)}><p className="font-bold">{s.name}</p><p className="text-xs text-slate-400 mt-0.5">کد ورود: <span dir="ltr" className="font-mono font-bold text-emerald-400">{s.code}</span> · {s.classCount} کلاس · {s.studentCount} دانش‌آموز · {s.userCount} کاربر</p></button>
             {stateBadge(s)}
-            <Badge variant="outline" className="border-slate-600 text-slate-300">اشتراک تا {s.subscriptionEnd ?? "—"}</Badge>
+            <Badge variant="outline" className="border-slate-600 text-slate-300">اشتراک تا {s.subscriptionEnd ? formatJalaliShort(s.subscriptionEnd) : "—"}</Badge>
             <Button size="sm" variant="outline" className="border-slate-600" onClick={() => updateSchool.mutate({ id: s.id, extendMonths: 1 })}>+۱ ماه</Button>
             <Button size="sm" variant="outline" className="border-slate-600" onClick={() => updateSchool.mutate({ id: s.id, extendMonths: 12 })}>+۱۲ ماه</Button>
             {s.status === "active"

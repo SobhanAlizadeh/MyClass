@@ -4,7 +4,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { connect } from "@tidbcloud/serverless";
 import { drizzle } from "drizzle-orm/tidb-serverless";
 import { TRPCError } from "@trpc/server";
-import { academicYears, activities, attendance, classes, grades, schools, scheduleSlots, studentTeamTransfers, students, subjects, teams, users, type School, type User } from "../drizzle/schema";
+import { academicYears, activities, attendance, classes, events, exams, grades, schools, scheduleSlots, studentTeamTransfers, students, subjects, teams, users, type School, type User } from "../drizzle/schema";
 import { getDb } from "./db";
 import { getEnv } from "./_core/env";
 
@@ -214,6 +214,8 @@ export async function deleteTenantSchool(id: number): Promise<void> {
   await db.delete(attendance).where(eq(attendance.schoolId, id));
   await db.delete(scheduleSlots).where(eq(scheduleSlots.schoolId, id));
   await db.delete(grades).where(eq(grades.schoolId, id));
+  await db.delete(exams).where(eq(exams.schoolId, id)).catch(() => {});
+  await db.delete(events).where(eq(events.schoolId, id)).catch(() => {});
   await db.delete(activities).where(eq(activities.schoolId, id)).catch(() => {});
   await db.delete(studentTeamTransfers).where(eq(studentTeamTransfers.schoolId, id)).catch(() => {});
   await db.delete(students).where(eq(students.schoolId, id));
@@ -516,6 +518,15 @@ export function ensureV2Columns(conn: ReturnType<typeof connect>) {
       "ALTER TABLE attendance ADD COLUMN IF NOT EXISTS period INT NULL",
       "ALTER TABLE students ADD COLUMN IF NOT EXISTS graduated INT NOT NULL DEFAULT 0",
       "CREATE TABLE IF NOT EXISTS schedule_slots (id INT AUTO_INCREMENT PRIMARY KEY, schoolId INT NULL, classId INT NOT NULL, dayOfWeek INT NOT NULL, period INT NOT NULL, subjectId INT NULL, createdAt TIMESTAMP NOT NULL DEFAULT NOW())",
+      // — فاز ۳: امتحان + تقویم + اتصال نمره به امتحان + تنظیم تبدیل امتیاز به نمره —
+      "CREATE TABLE IF NOT EXISTS exams (id INT AUTO_INCREMENT PRIMARY KEY, schoolId INT NULL, classId INT NOT NULL, subjectId INT NULL, title VARCHAR(160) NOT NULL, examType VARCHAR(20) NOT NULL DEFAULT 'quiz', date VARCHAR(10) NOT NULL, maxScore INT NOT NULL DEFAULT 20, weight INT NOT NULL DEFAULT 1, note TEXT NULL, createdAt TIMESTAMP NOT NULL DEFAULT NOW())",
+      "CREATE TABLE IF NOT EXISTS events (id INT AUTO_INCREMENT PRIMARY KEY, schoolId INT NULL, classId INT NULL, title VARCHAR(180) NOT NULL, kind ENUM('exam','homework','activity','meeting','other') NOT NULL DEFAULT 'other', date VARCHAR(10) NOT NULL, note TEXT NULL, createdAt TIMESTAMP NOT NULL DEFAULT NOW())",
+      "ALTER TABLE grades ADD COLUMN IF NOT EXISTS examId INT NULL",
+      "ALTER TABLE exams ADD INDEX IF NOT EXISTS idx_exams_school_class (schoolId, classId)",
+      "ALTER TABLE exams ADD INDEX IF NOT EXISTS idx_exams_school_date (schoolId, date)",
+      "ALTER TABLE events ADD INDEX IF NOT EXISTS idx_events_school_date (schoolId, date)",
+      "ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS points_grade_base DOUBLE NULL",
+      "ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS points_grade_divisor DOUBLE NULL",
       "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS school_id INT NULL",
       "ALTER TABLE schools ADD UNIQUE INDEX IF NOT EXISTS uq_schools_code (code)",
       "ALTER TABLE users ADD INDEX IF NOT EXISTS idx_users_school_username (schoolId, username)",
@@ -541,7 +552,7 @@ export function getV2Conn() { const conn = getV2Raw(); return conn ? (ensureV2Co
 export { drizzle };
 
 // --- Tenant ownership guard: any mutation by school user must target own-school rows ---
-export type OwnableKind = "student" | "team" | "class" | "grade" | "referral";
+export type OwnableKind = "student" | "team" | "class" | "grade" | "referral" | "exam" | "event";
 export async function assertTenantOwned(schoolId: number | null, kind: OwnableKind, id: number): Promise<void> {
   if (schoolId == null) return; // سوپرادمین ناظر
   const db = await getDb();
@@ -551,6 +562,247 @@ export async function assertTenantOwned(schoolId: number | null, kind: OwnableKi
   else if (kind === "team") { const r = await db.select({ id: teams.id }).from(teams).where(and(eq(teams.id, id), eq(teams.schoolId, schoolId))).limit(1); owned = r.length > 0; }
   else if (kind === "class") { const r = await db.select({ id: classes.id }).from(classes).where(and(eq(classes.id, id), eq(classes.schoolId, schoolId))).limit(1); owned = r.length > 0; }
   else if (kind === "grade") { const r = await db.select({ id: grades.id }).from(grades).where(and(eq(grades.id, id), eq(grades.schoolId, schoolId))).limit(1); owned = r.length > 0; }
+  else if (kind === "exam") { const r = await db.select({ id: exams.id }).from(exams).where(and(eq(exams.id, id), eq(exams.schoolId, schoolId))).limit(1); owned = r.length > 0; }
+  else if (kind === "event") { const r = await db.select({ id: events.id }).from(events).where(and(eq(events.id, id), eq(events.schoolId, schoolId))).limit(1); owned = r.length > 0; }
   else if (kind === "referral") { const conn = getV2Conn(); if (!conn) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" }); const r: any = await conn.execute("SELECT r.id FROM referrals r JOIN students s ON s.id = r.student_id WHERE r.id = ? AND s.schoolId = ? LIMIT 1", [id, schoolId]); owned = ((Array.isArray(r) ? r : r.rows) ?? []).length > 0; }
   if (!owned) throw new TRPCError({ code: "NOT_FOUND", message: "این رکورد به مدرسه شما تعلق ندارد" });
 }
+
+// --- فاز ۳: امتحان‌ها و نمره‌دهی گروهی -------------------------------------------
+// نمره‌های هر امتحان در جدول grades با examId ذخیره می‌شوند → گزارش/میانگین‌ها خودکار می‌بینند
+const gradeTypeForExam = (examType: string): "class" | "midterm" | "final" =>
+  examType === "midterm" ? "midterm" : examType === "final" ? "final" : "class";
+
+export async function listExamsWithStats(schoolId: number, classId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({
+    id: exams.id, classId: exams.classId, subjectId: exams.subjectId, title: exams.title, examType: exams.examType,
+    date: exams.date, maxScore: exams.maxScore, weight: exams.weight, note: exams.note,
+    scoreCount: sql<number>`count(${grades.id})`,
+    avgScore: sql<number>`COALESCE(AVG(${grades.score}), 0)`,
+  }).from(exams).leftJoin(grades, eq(grades.examId, exams.id))
+    .where(and(eq(exams.schoolId, schoolId), eq(exams.classId, classId)))
+    .groupBy(exams.id).orderBy(desc(exams.date), desc(exams.id));
+}
+
+// امتحان‌های بازه تاریخ — برای تقویم ماهانه (همه کلاس‌ها)
+export async function listExamsBetween(schoolId: number, fromDate: string, toDate: string) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ id: exams.id, classId: exams.classId, subjectId: exams.subjectId, title: exams.title, examType: exams.examType, date: exams.date, maxScore: exams.maxScore })
+    .from(exams)
+    .where(and(eq(exams.schoolId, schoolId), sql`${exams.date} >= ${fromDate}`, sql`${exams.date} <= ${toDate}`))
+    .orderBy(asc(exams.date), asc(exams.id)).limit(400);
+}
+
+export async function createExam(schoolId: number, input: { classId: number; subjectId: number | null; title: string; examType: string; date: string; maxScore: number; weight: number; note?: string }) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const owned = await db.select({ id: classes.id }).from(classes).where(and(eq(classes.id, input.classId), eq(classes.schoolId, schoolId))).limit(1);
+  if (!owned.length) throw new TRPCError({ code: "NOT_FOUND", message: "این کلاس به مدرسه شما تعلق ندارد" });
+  if (input.subjectId != null) {
+    const sub = await db.select({ id: subjects.id }).from(subjects).where(and(eq(subjects.id, input.subjectId), eq(subjects.classId, input.classId), eq(subjects.schoolId, schoolId))).limit(1);
+    if (!sub.length) throw new TRPCError({ code: "NOT_FOUND", message: "این درس به این کلاس تعلق ندارد" });
+  }
+  const title = input.title.trim();
+  if (!title) throw new TRPCError({ code: "BAD_REQUEST", message: "عنوان امتحان لازم است" });
+  const rows = await db.insert(exams).values({
+    schoolId, classId: input.classId, subjectId: input.subjectId ?? null, title,
+    examType: input.examType, date: input.date, maxScore: Math.min(1000, Math.max(1, Math.round(input.maxScore))),
+    weight: Math.min(10, Math.max(1, Math.round(input.weight || 1))), note: input.note?.trim() || null,
+  }).$returningId();
+  return Number((rows as Array<{ id: number }>)[0]?.id);
+}
+
+export async function updateExam(schoolId: number, input: { id: number; subjectId: number | null; title: string; examType: string; date: string; maxScore: number; weight: number; note?: string }) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select().from(exams).where(and(eq(exams.id, input.id), eq(exams.schoolId, schoolId))).limit(1);
+  const exam = rows[0];
+  if (!exam) throw new TRPCError({ code: "NOT_FOUND", message: "امتحان پیدا نشد" });
+  if (input.subjectId != null) {
+    const sub = await db.select({ id: subjects.id }).from(subjects).where(and(eq(subjects.id, input.subjectId), eq(subjects.classId, exam.classId), eq(subjects.schoolId, schoolId))).limit(1);
+    if (!sub.length) throw new TRPCError({ code: "NOT_FOUND", message: "این درس به این کلاس تعلق ندارد" });
+  }
+  const title = input.title.trim() || exam.title;
+  const maxScore = Math.min(1000, Math.max(1, Math.round(input.maxScore)));
+  await db.update(exams).set({ subjectId: input.subjectId ?? null, title, examType: input.examType, date: input.date, maxScore, weight: Math.min(10, Math.max(1, Math.round(input.weight || 1))), note: input.note?.trim() || null }).where(eq(exams.id, input.id));
+  // همگام‌سازی نمره‌های وصل به امتحان (تا گزارش‌ها همیشه با امتحان بخوانند)
+  await db.update(grades).set({ title, subjectId: input.subjectId ?? null, date: input.date, maxScore, gradeType: gradeTypeForExam(input.examType) }).where(eq(grades.examId, input.id));
+  return { ok: true as const };
+}
+
+export async function deleteExam(schoolId: number, examId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: exams.id }).from(exams).where(and(eq(exams.id, examId), eq(exams.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "امتحان پیدا نشد" });
+  await db.delete(grades).where(eq(grades.examId, examId));
+  await db.delete(exams).where(eq(exams.id, examId));
+}
+
+export async function listExamScores(schoolId: number, examId: number) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select().from(exams).where(and(eq(exams.id, examId), eq(exams.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "امتحان پیدا نشد" });
+  return db.select({ id: grades.id, studentId: grades.studentId, score: grades.score }).from(grades).where(eq(grades.examId, examId));
+}
+
+export async function saveExamScores(schoolId: number, examId: number, scores: Array<{ studentId: number; score: number | null }>) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const [exam] = await db.select().from(exams).where(and(eq(exams.id, examId), eq(exams.schoolId, schoolId))).limit(1);
+  if (!exam) throw new TRPCError({ code: "NOT_FOUND", message: "امتحان پیدا نشد" });
+  // فقط دانش‌آموزان فعالِ همین کلاس و همین مدرسه مجازند (ضد cross-tenant)
+  const roster = await db.select({ id: students.id }).from(students).where(and(eq(students.classId, exam.classId), eq(students.schoolId, schoolId), eq(students.graduated, 0)));
+  const valid = new Set(roster.map(r => r.id));
+  let saved = 0, cleared = 0;
+  for (const row of scores) {
+    if (!valid.has(row.studentId)) continue;
+    const existing = await db.select({ id: grades.id }).from(grades).where(and(eq(grades.examId, examId), eq(grades.studentId, row.studentId))).limit(1);
+    if (row.score == null || Number.isNaN(row.score)) {
+      if (existing.length) { await db.delete(grades).where(eq(grades.id, existing[0].id)); cleared++; }
+      continue;
+    }
+    const score = Math.min(exam.maxScore, Math.max(0, Math.round(row.score)));
+    if (existing.length) { await db.update(grades).set({ score }).where(eq(grades.id, existing[0].id)); }
+    else {
+      await db.insert(grades).values({
+        studentId: row.studentId, subjectId: exam.subjectId, gradeType: gradeTypeForExam(exam.examType),
+        title: exam.title, score, maxScore: exam.maxScore, date: exam.date, examId, schoolId,
+      });
+    }
+    saved++;
+  }
+  return { saved, cleared };
+}
+
+// --- فاز ۳: تقویم رویدادها --------------------------------------------------------
+export async function listEvents(schoolId: number, fromDate: string, toDate: string) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(events)
+    .where(and(eq(events.schoolId, schoolId), sql`${events.date} >= ${fromDate}`, sql`${events.date} <= ${toDate}`))
+    .orderBy(asc(events.date), asc(events.id)).limit(500);
+}
+
+export async function createEvent(schoolId: number, input: { classId: number | null; title: string; kind: string; date: string; note?: string }) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const title = input.title.trim();
+  if (!title) throw new TRPCError({ code: "BAD_REQUEST", message: "عنوان رویداد لازم است" });
+  if (input.classId != null) {
+    const owned = await db.select({ id: classes.id }).from(classes).where(and(eq(classes.id, input.classId), eq(classes.schoolId, schoolId))).limit(1);
+    if (!owned.length) throw new TRPCError({ code: "NOT_FOUND", message: "این کلاس به مدرسه شما تعلق ندارد" });
+  }
+  const rows = await db.insert(events).values({ schoolId, classId: input.classId ?? null, title, kind: input.kind as "exam" | "homework" | "activity" | "meeting" | "other", date: input.date, note: input.note?.trim() || null }).$returningId();
+  return Number((rows as Array<{ id: number }>)[0]?.id);
+}
+
+export async function updateEvent(schoolId: number, input: { id: number; classId: number | null; title: string; kind: string; date: string; note?: string }) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: events.id }).from(events).where(and(eq(events.id, input.id), eq(events.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "رویداد پیدا نشد" });
+  if (input.classId != null) {
+    const owned = await db.select({ id: classes.id }).from(classes).where(and(eq(classes.id, input.classId), eq(classes.schoolId, schoolId))).limit(1);
+    if (!owned.length) throw new TRPCError({ code: "NOT_FOUND", message: "این کلاس به مدرسه شما تعلق ندارد" });
+  }
+  await db.update(events).set({ classId: input.classId ?? null, title: input.title.trim(), kind: input.kind as "exam" | "homework" | "activity" | "meeting" | "other", date: input.date, note: input.note?.trim() || null }).where(eq(events.id, input.id));
+  return { ok: true as const };
+}
+
+// درگ‌ودراپ فقط تاریخ را عوض می‌کند — سبک و سریع
+export async function moveEvent(schoolId: number, eventId: number, date: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: events.id }).from(events).where(and(eq(events.id, eventId), eq(events.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "رویداد پیدا نشد" });
+  await db.update(events).set({ date }).where(eq(events.id, eventId));
+}
+
+export async function moveExam(schoolId: number, examId: number, date: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: exams.id }).from(exams).where(and(eq(exams.id, examId), eq(exams.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "امتحان پیدا نشد" });
+  await db.update(exams).set({ date }).where(eq(exams.id, examId));
+  await db.update(grades).set({ date }).where(eq(grades.examId, examId));
+}
+
+export async function deleteEvent(schoolId: number, eventId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const rows = await db.select({ id: events.id }).from(events).where(and(eq(events.id, eventId), eq(events.schoolId, schoolId))).limit(1);
+  if (!rows.length) throw new TRPCError({ code: "NOT_FOUND", message: "رویداد پیدا نشد" });
+  await db.delete(events).where(eq(events.id, eventId));
+}
+
+// --- فاز ۳: تبدیل امتیاز به نمره ---------------------------------------------------
+// فرمول شفاف: نمره = clamp(پایه + امتیاز خالص ÷ ضریب، ۰، ۲۰) — هر مدرسه پایه/ضریب خودش را تنظیم می‌کند
+// نمره به مضرب ۰٫۲۵ گِرد می‌شود (عرف نمره‌گذاری مدارس ایران)
+export const POINTS_GRADE_TITLE = "نمره فعالیت و انضباط (خودکار از امتیاز)";
+const DEFAULT_POINTS_GRADE = { base: 10, divisor: 5 };
+
+export async function getPointsGradeConfig(schoolId: number): Promise<{ base: number; divisor: number }> {
+  const conn = getV2Conn();
+  if (!conn) return DEFAULT_POINTS_GRADE;
+  const res: any = await conn.execute("SELECT points_grade_base, points_grade_divisor FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]).catch(() => null);
+  const row = ((Array.isArray(res) ? res : res?.rows) ?? [])[0];
+  const base = Number(row?.points_grade_base);
+  const divisor = Number(row?.points_grade_divisor);
+  return {
+    base: Number.isFinite(base) && base >= 0 && base <= 20 ? base : DEFAULT_POINTS_GRADE.base,
+    divisor: Number.isFinite(divisor) && divisor >= 0.5 && divisor <= 100 ? divisor : DEFAULT_POINTS_GRADE.divisor,
+  };
+}
+
+export async function setPointsGradeConfig(schoolId: number, base: number, divisor: number): Promise<void> {
+  const conn = getV2Conn();
+  if (!conn) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  await conn.execute(
+    "INSERT INTO school_settings (school_id, points_grade_base, points_grade_divisor, updated_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE points_grade_base = VALUES(points_grade_base), points_grade_divisor = VALUES(points_grade_divisor), updated_at = VALUES(updated_at)",
+    [schoolId, base, divisor, Date.now()],
+  );
+}
+
+export const pointsToGrade = (net: number, base: number, divisor: number) => {
+  const raw = base + net / divisor;
+  const clamped = Math.min(20, Math.max(0, raw));
+  return Math.round(clamped * 4) / 4;
+};
+
+export async function pointsGradePreview(schoolId: number, classId: number) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const owned = await db.select({ id: classes.id }).from(classes).where(and(eq(classes.id, classId), eq(classes.schoolId, schoolId))).limit(1);
+  if (!owned.length) throw new TRPCError({ code: "NOT_FOUND", message: "این کلاس به مدرسه شما تعلق ندارد" });
+  const [cfg, roster] = await Promise.all([getPointsGradeConfig(schoolId),
+    db.select({ id: students.id, firstName: students.firstName, lastName: students.lastName, totalPoints: students.totalPoints })
+      .from(students).where(and(eq(students.classId, classId), eq(students.schoolId, schoolId), eq(students.graduated, 0))).orderBy(asc(students.firstName))]);
+  return {
+    config: cfg,
+    rows: roster.map(s => ({
+      studentId: s.id, name: `${s.firstName} ${s.lastName}`, totalPoints: s.totalPoints,
+      score: pointsToGrade(s.totalPoints, cfg.base, cfg.divisor),
+    })),
+  };
+}
+
+export async function pointsGradeApply(schoolId: number, classId: number, date: string) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });
+  const preview = await pointsGradePreview(schoolId, classId);
+  let applied = 0;
+  for (const row of preview.rows) {
+    const existing = await db.select({ id: grades.id }).from(grades)
+      .where(and(eq(grades.studentId, row.studentId), eq(grades.title, POINTS_GRADE_TITLE), sql`${grades.subjectId} IS NULL`)).limit(1);
+    if (existing.length) await db.update(grades).set({ score: row.score, maxScore: 20, date, note: "محاسبه خودکار از امتیازها" }).where(eq(grades.id, existing[0].id));
+    else await db.insert(grades).values({ studentId: row.studentId, subjectId: null, gradeType: "class", title: POINTS_GRADE_TITLE, score: row.score, maxScore: 20, date, note: "محاسبه خودکار از امتیازها", schoolId });
+    applied++;
+  }
+  return { applied };
+}
+

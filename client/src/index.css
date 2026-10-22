@@ -195,6 +195,7 @@
 .app-shell[data-panel="referrals"] .mobile-panel:not(.panel-referrals) { display: none !important; }
 .app-shell[data-panel="settings"] .mobile-panel:not(.panel-settings) { display: none !important; }
 .app-shell[data-panel="schedule"] .mobile-panel:not(.panel-schedule) { display: none !important; }
+.app-shell[data-panel="grades"] .mobile-panel:not(.panel-grades) { display: none !important; }
 @media (max-width: 767px) {
   html, body, #root, .app-shell { width: 100vw !important; max-width: 100vw !important; overflow-x: hidden !important; }
   .mobile-panel-nav, .app-shell main { width: 100% !important; max-width: 100% !important; }

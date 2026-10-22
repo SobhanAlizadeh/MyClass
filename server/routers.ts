@@ -14,6 +14,9 @@ import {
   getDefaultPublicSchool, assertTenantOwned, getSchoolUserOwned, countActiveManagers,
   listAcademicYears, createAcademicYear, setActiveAcademicYear, deleteAcademicYear,
   listScheduleSlots, setScheduleSlot, promotionPreview, promotionApply,
+  listExamsWithStats, listExamsBetween, createExam, updateExam, deleteExam, listExamScores, saveExamScores,
+  listEvents, createEvent, updateEvent, moveEvent, moveExam, deleteEvent,
+  getPointsGradeConfig, setPointsGradeConfig, pointsGradePreview, pointsGradeApply,
 } from "./db-v2";
 import { revokeTelegramInviteLink, loadTgCfg, testBotToken, saveSchoolBotConfig, registerSchoolWebhook, getSchoolWebhookInfo, disconnectSchoolBot } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -227,6 +230,77 @@ export const appRouter = router({
     promotionApply: schedulerProcedure.input(z.object({ fromYearId: z.number().int().positive().nullable(), toYearId: z.number().int().positive(), mappings: z.array(z.object({ fromClassId: z.number().int().positive(), mode: z.enum(["promote", "graduate"]), toClassId: z.number().int().positive().nullable().optional(), toClassName: z.string().max(120).nullable().optional() })).min(1) })).mutation(({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ارتقا فقط از پنل مدرسه انجام می‌شود" });
       return promotionApply(ctx.schoolId, input);
+    }),
+  }),
+  // ——— فاز ۳: امتحان‌ها و نمره‌دهی گروهی — خواندن: همه نقش‌ها؛ نوشتن: معلم/مدیر ———
+  exams: router({
+    list: schoolAnyProcedure.input(z.object({ classId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) return [];
+      await assertTenantOwned(ctx.schoolId, "class", input.classId);
+      return listExamsWithStats(ctx.schoolId, input.classId);
+    }),
+    calendar: schoolAnyProcedure.input(z.object({ from: date, to: date })).query(({ ctx, input }) => ctx.schoolId == null ? [] : listExamsBetween(ctx.schoolId, input.from, input.to)),
+    create: teacherProcedure.input(z.object({ classId: z.number().int().positive(), subjectId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(160), examType: z.enum(["quiz", "homework", "practice", "midterm", "final"]).default("quiz"), date, maxScore: z.number().int().min(1).max(1000).default(20), weight: z.number().int().min(1).max(10).default(1), note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ثبت امتحان فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "class", input.classId);
+      return createExam(ctx.schoolId, input);
+    }),
+    update: teacherProcedure.input(z.object({ id: z.number().int().positive(), subjectId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(160), examType: z.enum(["quiz", "homework", "practice", "midterm", "final"]), date, maxScore: z.number().int().min(1).max(1000), weight: z.number().int().min(1).max(10).default(1), note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ویرایش امتحان فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "exam", input.id);
+      return updateExam(ctx.schoolId, input);
+    }),
+    remove: teacherProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "حذف امتحان فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "exam", input.id);
+      return deleteExam(ctx.schoolId, input.id);
+    }),
+    scoresList: schoolAnyProcedure.input(z.object({ examId: z.number().int().positive() })).query(({ ctx, input }) => ctx.schoolId == null ? [] : listExamScores(ctx.schoolId, input.examId)),
+    scores: teacherProcedure.input(z.object({ examId: z.number().int().positive(), scores: z.array(z.object({ studentId: z.number().int().positive(), score: z.number().min(0).max(1000).nullable() })).max(200) })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ثبت نمره فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "exam", input.examId);
+      return saveExamScores(ctx.schoolId, input.examId, input.scores);
+    }),
+    move: teacherProcedure.input(z.object({ id: z.number().int().positive(), date })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "جابجایی امتحان فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "exam", input.id);
+      return moveExam(ctx.schoolId, input.id, input.date);
+    }),
+  }),
+  // ——— فاز ۳: تقویم رویدادها (درگ‌ودراپ) ———
+  calendar: router({
+    list: schoolAnyProcedure.input(z.object({ from: date, to: date })).query(({ ctx, input }) => ctx.schoolId == null ? [] : listEvents(ctx.schoolId, input.from, input.to)),
+    create: teacherProcedure.input(z.object({ classId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(180), kind: z.enum(["exam", "homework", "activity", "meeting", "other"]).default("other"), date, note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ثبت رویداد فقط از پنل مدرسه انجام می‌شود" });
+      return createEvent(ctx.schoolId, input);
+    }),
+    update: teacherProcedure.input(z.object({ id: z.number().int().positive(), classId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(180), kind: z.enum(["exam", "homework", "activity", "meeting", "other"]), date, note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ویرایش رویداد فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "event", input.id);
+      return updateEvent(ctx.schoolId, input);
+    }),
+    move: teacherProcedure.input(z.object({ id: z.number().int().positive(), date })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "جابجایی رویداد فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "event", input.id);
+      return moveEvent(ctx.schoolId, input.id, input.date);
+    }),
+    remove: teacherProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "حذف رویداد فقط از پنل مدرسه انجام می‌شود" });
+      await assertTenantOwned(ctx.schoolId, "event", input.id);
+      return deleteEvent(ctx.schoolId, input.id);
+    }),
+  }),
+  // ——— فاز ۳: تبدیل امتیاز به نمره — پیکربندی فقط مدیر؛ اجرا معلم/مدیر ———
+  gradesTools: router({
+    pointsConfig: managerOnlyProcedure.query(({ ctx }) => ctx.schoolId == null ? { base: 10, divisor: 5 } : getPointsGradeConfig(ctx.schoolId)),
+    setPointsConfig: managerOnlyProcedure.input(z.object({ base: z.number().min(0).max(20), divisor: z.number().min(0.5).max(100) })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return setPointsGradeConfig(ctx.schoolId, input.base, input.divisor);
+    }),
+    pointsPreview: teacherProcedure.input(z.object({ classId: z.number().int().positive() })).query(({ ctx, input }) => ctx.schoolId == null ? { config: { base: 10, divisor: 5 }, rows: [] } : pointsGradePreview(ctx.schoolId, input.classId)),
+    pointsApply: teacherProcedure.input(z.object({ classId: z.number().int().positive(), date })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ثبت نمره فقط از پنل مدرسه انجام می‌شود" });
+      return pointsGradeApply(ctx.schoolId, input.classId, input.date);
     }),
   }),
   // پنل سوپرادمین — مدیریت مدارس/اشتراک/کاربران (ثبت‌نام عمومی وجود ندارد؛ فقط از اینجا بعد از پرداخت)

@@ -1,5 +1,5 @@
 // Shared building blocks for admin panels (moved verbatim from Home.tsx during v2 refactor).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,15 +14,19 @@ export type Kind = "positive" | "negative" | "neutral";
 export type GradeType = "class" | "midterm" | "final";
 export const gradeTypeLabels: Record<GradeType, string> = { class: "امتحان کلاسی", midterm: "امتحان میان‌ترم", final: "امتحان پایان‌ترم" };
 
-export function JalaliDatePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const current = toJalaliParts(value);
+// انتخابگر تاریخ شمسی — ورودی/خروجی میلادی ISO؛ نمایش شمسی.
+// value === "" یعنی «تاریخ انتخاب نشده» (اختیاری) — دکمه placeholder نشان می‌دهد و قابل پاک‌کردن است.
+export function JalaliDatePicker({ value, onChange, placeholder, allowClear }: { value: string; onChange: (value: string) => void; placeholder?: string; allowClear?: boolean }) {
+  const base = value || today;
+  const current = toJalaliParts(base);
   const [year, setYear] = useState(current.year);
   const [month, setMonth] = useState(current.month);
   const [day, setDay] = useState(current.day);
-  const years = Array.from({ length: 11 }, (_, i) => current.year - 5 + i);
+  useEffect(() => { const p = toJalaliParts(value || today); setYear(p.year); setMonth(p.month); setDay(p.day); }, [value]);
+  const years = Array.from({ length: 15 }, (_, i) => current.year - 8 + i);
   const days = Array.from({ length: jalaliDaysInMonth(year, month) }, (_, i) => i + 1);
   const update = (nextYear: number, nextMonth: number, nextDay: number) => { const safeDay = Math.min(nextDay, jalaliDaysInMonth(nextYear, nextMonth)); setYear(nextYear); setMonth(nextMonth); setDay(safeDay); onChange(jalaliToGregorian(nextYear, nextMonth, safeDay)); };
-  return <Popover><PopoverTrigger asChild><Button variant="ghost" className="font-bold text-[#0f766e]"><CalendarDays className="h-4 w-4 ml-2" />{formatJalaliShort(value)}</Button></PopoverTrigger><PopoverContent align="end" className="w-[290px] p-4" dir="rtl"><p className="font-bold mb-3">انتخاب تاریخ شمسی</p><div className="grid grid-cols-3 gap-2"><Select value={String(day)} onValueChange={v => update(year, month, Number(v))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{days.map(d => <SelectItem key={d} value={String(d)}>{d}</SelectItem>)}</SelectContent></Select><Select value={String(month)} onValueChange={v => update(year, Number(v), day)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{monthNames.map((name, i) => <SelectItem key={i + 1} value={String(i + 1)}>{name}</SelectItem>)}</SelectContent></Select><Select value={String(year)} onValueChange={v => update(Number(v), month, day)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{years.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent></Select></div></PopoverContent></Popover>;
+  return <Popover><PopoverTrigger asChild><Button variant="ghost" className={`font-bold ${value ? "text-[#0f766e]" : "text-slate-400"}`}><CalendarDays className="h-4 w-4 ml-2" />{value ? formatJalaliShort(value) : (placeholder ?? formatJalaliShort(today))}</Button></PopoverTrigger><PopoverContent align="end" className="w-[290px] p-4" dir="rtl"><p className="font-bold mb-3">انتخاب تاریخ شمسی</p><div className="grid grid-cols-3 gap-2"><Select value={String(day)} onValueChange={v => update(year, month, Number(v))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{days.map(d => <SelectItem key={d} value={String(d)}>{d}</SelectItem>)}</SelectContent></Select><Select value={String(month)} onValueChange={v => update(year, Number(v), day)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{monthNames.map((name, i) => <SelectItem key={i + 1} value={String(i + 1)}>{name}</SelectItem>)}</SelectContent></Select><Select value={String(year)} onValueChange={v => update(Number(v), month, day)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{years.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent></Select></div><div className="mt-2 flex items-center justify-between text-xs text-slate-400"><span>مبنای ذخیره‌سازی میلادی است؛ نمایش شمسی</span>{allowClear && value && <button type="button" className="font-bold text-red-500 hover:text-red-700" onClick={() => onChange("")}>پاک‌کردن تاریخ</button>}</div></PopoverContent></Popover>;
 }
 
 export function Field({ label, children, className }: { label?: any; children?: any; className?: any }) { return <div className={`space-y-2 ${className ?? ""}`}><Label className="text-xs font-semibold text-slate-600">{label}</Label>{children}</div>; }

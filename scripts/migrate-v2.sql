@@ -37,6 +37,17 @@ ALTER TABLE students ADD COLUMN IF NOT EXISTS graduated INT NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS schedule_slots (id INT AUTO_INCREMENT PRIMARY KEY, schoolId INT NULL, classId INT NOT NULL, dayOfWeek INT NOT NULL, period INT NOT NULL, subjectId INT NULL, createdAt TIMESTAMP NOT NULL DEFAULT NOW());
 ALTER TABLE schedule_slots ADD INDEX IF NOT EXISTS idx_slots_class_day_period (classId, dayOfWeek, period);
 
+-- 4c) phase 3: exams + calendar events + exam-linked grades
+CREATE TABLE IF NOT EXISTS exams (id INT AUTO_INCREMENT PRIMARY KEY, schoolId INT NULL, classId INT NOT NULL, subjectId INT NULL, title VARCHAR(160) NOT NULL, examType VARCHAR(20) NOT NULL DEFAULT 'quiz', date VARCHAR(10) NOT NULL, maxScore INT NOT NULL DEFAULT 20, weight INT NOT NULL DEFAULT 1, note TEXT NULL, createdAt TIMESTAMP NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS events (id INT AUTO_INCREMENT PRIMARY KEY, schoolId INT NULL, classId INT NULL, title VARCHAR(180) NOT NULL, kind ENUM('exam','homework','activity','meeting','other') NOT NULL DEFAULT 'other', date VARCHAR(10) NOT NULL, note TEXT NULL, createdAt TIMESTAMP NOT NULL DEFAULT NOW());
+ALTER TABLE grades ADD COLUMN IF NOT EXISTS examId INT NULL;
+ALTER TABLE exams ADD INDEX IF NOT EXISTS idx_exams_school_class (schoolId, classId);
+ALTER TABLE exams ADD INDEX IF NOT EXISTS idx_exams_school_date (schoolId, date);
+ALTER TABLE events ADD INDEX IF NOT EXISTS idx_events_school_date (schoolId, date);
+CREATE TABLE IF NOT EXISTS school_settings (school_id INT PRIMARY KEY, bot_token TEXT NULL, channel_id VARCHAR(128) NULL, webhook_secret VARCHAR(64) NULL, bot_username VARCHAR(64) NULL, webhook_url VARCHAR(255) NULL, referral_points DECIMAL(10,2) NULL, referral_leave_penalty TINYINT NULL, updated_at BIGINT NOT NULL DEFAULT 0);
+ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS points_grade_base DOUBLE NULL;
+ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS points_grade_divisor DOUBLE NULL;
+
 -- 5) backfill schoolId from class relationships (only where NULL)
 UPDATE teams t JOIN classes c ON t.classId = c.id SET t.schoolId = c.schoolId WHERE t.schoolId IS NULL;
 UPDATE students s JOIN classes c ON s.classId = c.id SET s.schoolId = c.schoolId WHERE s.schoolId IS NULL;

@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { CalendarRange, Info } from "lucide-react";
 import { Empty } from "./shared";
+import { CalendarPanel } from "./CalendarPanel";
 import { trpc } from "@/lib/trpc";
 
 const DAY_NAMES = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه"];
@@ -15,6 +16,7 @@ const PERIODS = [1, 2, 3, 4, 5, 6, 7, 8];
 
 export function SchedulePanel({ ctx, role }: { ctx: any; role?: string }) {
   const canEdit = role === "manager" || role === "scheduler";
+  const [view, setView] = useState<"weekly" | "monthly">("weekly");
   const [classId, setClassId] = useState("");
   const classes = ctx.classes ?? [];
   useEffect(() => {
@@ -40,6 +42,12 @@ export function SchedulePanel({ ctx, role }: { ctx: any; role?: string }) {
 
   return (
     <div className="mobile-panel panel-schedule space-y-4">
+      {/* انتخاب نما: برنامه هفتگی / تقویم ماهانه */}
+      <div className="grid grid-cols-2 gap-1 rounded-2xl bg-white p-1.5 shadow-sm border max-w-sm">
+        <button type="button" onClick={() => setView("weekly")} className={`rounded-xl py-2 text-xs font-bold transition-colors ${view === "weekly" ? "bg-[#0f766e] text-white" : "text-slate-600 hover:bg-slate-100"}`}>برنامه هفتگی</button>
+        <button type="button" onClick={() => setView("monthly")} className={`rounded-xl py-2 text-xs font-bold transition-colors ${view === "monthly" ? "bg-[#0f766e] text-white" : "text-slate-600 hover:bg-slate-100"}`}>تقویم ماهانه</button>
+      </div>
+      {view === "monthly" ? <CalendarPanel ctx={ctx} role={role} /> : (
       <Card className="border-0 shadow-sm rounded-2xl overflow-hidden">
         <CardHeader className="bg-white border-b flex-row items-center justify-between flex-wrap gap-3">
           <div>
@@ -106,6 +114,7 @@ export function SchedulePanel({ ctx, role }: { ctx: any; role?: string }) {
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }

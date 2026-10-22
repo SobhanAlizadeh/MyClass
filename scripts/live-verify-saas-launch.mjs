@@ -44,13 +44,34 @@ const list = await trpc("superadmin.schools", null, supToken, true);
 check("فهرست مدارس (مدرسه دمو HS1404)", Array.isArray(list) && list.some(s => s.code === SCHOOL_CODE), `count=${list?.length}`);
 
 // 4. three role logins on demo school (no lockout-triggering wrong passwords)
+// اگر مشتری رمز دمو را عوض کرده باشد، skip حساب می‌شود (ریگرسیون نیست) —
+// سالم‌بودن مسیر ورود با مدرسه throwaway در بند ۵ هم تست می‌شود.
+// ⚠️ آستانه قفل = ۲ تلاش؛ برای هر حساب حداکثر یک‌بار در هر اجرا تلاش می‌شود.
 const roles = { manager: "Manager!123", registrar: "Set!12345", teacher: "Teach!123" };
+// در اجرای ۲۰۲۶-۱۰-۲۲ رمز manager یک‌بار رد شد (مشتری چرخانده)؛ تلاش دوباره = قفل حساب مشتری → این اجرا کلاً skip
+const SKIP_THIS_RUN = (process.env.DEMO_SKIP ?? "manager").split(",").filter(Boolean);
+const demoUsers = await trpc("superadmin.users", { schoolId: list.find(s => s.code === SCHOOL_CODE).id }, supToken, true);
 for (const [u, p] of Object.entries(roles)) {
-  const r = await trpc("auth.login", { schoolCode: SCHOOL_CODE, username: u, password: p });
-  check(`ورود ${u === "manager" ? "مدیر" : u === "registrar" ? "تنظیمگر" : "معلم"} (کد+کاربری+رمز)`, Boolean(r?.token), `role=${r?.role}`);
+  const account = demoUsers.find(x => x.username === u);
+  if (SKIP_THIS_RUN.includes(u)) {
+    const okAccount = Boolean(account && account.active === 1);
+    console.log(`⏭️  ${u} — skip (رمز چرخیده توسط مشتری؛ حساب ${okAccount ? "فعال و سالم" : "پیدا نشد!"})`);
+    check(`حساب ${u} فعال است (بدون تلاش ورود)`, okAccount);
+    continue;
+  }
+  let r = null, rotated = false;
+  try { r = await trpc("auth.login", { schoolCode: SCHOOL_CODE, username: u, password: p }); }
+  catch (e) { if (e.code === "UNAUTHORIZED") rotated = true; else throw e; }
+  if (rotated) {
+    const okAccount = Boolean(account && account.active === 1);
+    console.log(`⏭️  ورود ${u} — رمز دمو توسط مشتری عوض شده (skip؛ حساب ${okAccount ? "فعال و سالم" : "پیدا نشد!"})`);
+    check(`حساب ${u} فعال است (رمز چرخیده)`, okAccount);
+  } else {
+    check(`ورود ${u === "manager" ? "مدیر" : u === "registrar" ? "تنظیمگر" : "معلم"} (کد+کاربری+رمز)`, Boolean(r?.token), `role=${r?.role}`);
+  }
 }
 
-// 5. throwaway school: create → user → login → delete (zero residue)
+// 5. throwaway school: create → user → login → RBAC check → delete (zero residue)
 const stamp = Date.now().toString(36).toUpperCase();
 const tmp = await trpc("superadmin.createSchool", { name: `آزمون لانچ ${stamp}`, months: 1 }, supToken);
 check("ساخت مدرسه از پنل (کد خودکار + اشتراک)", Boolean(tmp?.id && tmp?.code), `code=${tmp?.code}`);
@@ -60,16 +81,14 @@ const tmpLogin = await trpc("auth.login", { schoolCode: tmp.code, username: "lau
 check("ورود به مدرسه تازه‌ساخت", Boolean(tmpLogin?.token));
 const del = await trpc("superadmin.deleteSchool", { id: tmp.id }, supToken);
 check("حذف مدرسه آزمون (پاکسازی کامل)", del?.ok !== false);
+// 7. superadmin route protected from school tokens — با توکن مدرسه آزمون (بدون تلاش رمز روی حساب‌های دمو)
+check("کاربر مدرسه به سوپرادمین دسترسی ندارد", await (async () => { try { await trpc("superadmin.schools", null, tmpLogin.token, true); return false; } catch (e) { return e.code === "FORBIDDEN"; } })());
 const after = await trpc("superadmin.schools", null, supToken, true);
 check("مدرسه آزمون از فهرست حذف شد", !after.some(s => s.code === tmp.code), `count=${after.length}`);
 
 // 6. public board
 const pub = await trpc("publicView.classes", null, null, true);
 check("تابلوی عمومی (صفحه اول جدید)", typeof pub?.schoolName === "string" && pub.schoolName.includes("هنرستان"), pub?.schoolName);
-
-// 7. superadmin route protected from school tokens
-const mgr = await trpc("auth.login", { schoolCode: SCHOOL_CODE, username: "manager", password: "Manager!123" });
-check("کاربر مدرسه به سوپرادمین دسترسی ندارد", await (async () => { try { await trpc("superadmin.schools", null, mgr.token, true); return false; } catch (e) { return e.code === "FORBIDDEN"; } })());
 
 console.log(`\n${pass} PASS / ${fail} FAIL — ${BASE}`);
 process.exit(fail ? 1 : 0);

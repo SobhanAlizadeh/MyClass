@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { ArrowLeftRight, CalendarRange, Check, GraduationCap, Plus, Star, Trash2 } from "lucide-react";
-import { Empty } from "./shared";
+import { Empty, JalaliDatePicker } from "./shared";
+import { formatJalaliShort } from "@/lib/jalali";
 import { trpc } from "@/lib/trpc";
 
 type MappingState = Record<number, { mode: "new" | "to" | "graduate" | "skip"; toClassId: string; toClassName: string }>;
@@ -92,18 +93,18 @@ export function AcademicPanel({ ctx }: { ctx: any }) {
         <CardHeader><CardTitle className="text-lg flex items-center gap-2"><CalendarRange className="h-5 w-5 text-[#0f766e]" />سال‌های تحصیلی</CardTitle>
           <p className="text-sm text-slate-500 mt-1">کلاس‌های جدید به «سال فعال» وصل می‌شوند؛ در پایان سال، با ویزارد پایین کلاس‌ها را به سال بعد ارتقا بدهید.</p></CardHeader>
         <CardContent className="space-y-4">
-          <div className="rounded-xl bg-slate-50 p-3 grid grid-cols-1 md:grid-cols-[1fr_150px_150px_auto] gap-2 items-end">
+          <div className="rounded-xl bg-slate-50 p-3 grid grid-cols-1 md:grid-cols-[1fr_170px_170px_auto] gap-2 items-end">
             <div className="space-y-1"><Label className="text-xs font-semibold text-slate-600">عنوان سال — مثلاً ۱۴۰۵-۱۴۰۶</Label><Input value={title} onChange={(e: any) => setTitle(e.target.value)} placeholder="۱۴۰۵-۱۴۰۶" onKeyDown={(e: any) => e.key === "Enter" && submitYear()} /></div>
-            <div className="space-y-1"><Label className="text-xs font-semibold text-slate-600">شروع (اختیاری)</Label><Input dir="ltr" value={startDate} onChange={(e: any) => setStartDate(e.target.value)} placeholder="2026-09-01" /></div>
-            <div className="space-y-1"><Label className="text-xs font-semibold text-slate-600">پایان (اختیاری)</Label><Input dir="ltr" value={endDate} onChange={(e: any) => setEndDate(e.target.value)} placeholder="2027-06-20" /></div>
+            <div className="space-y-1"><Label className="text-xs font-semibold text-slate-600">شروع (اختیاری — شمسی)</Label><div className="bg-white rounded-xl border h-9 flex items-center px-1"><JalaliDatePicker value={startDate} onChange={setStartDate} placeholder="انتخاب تاریخ" allowClear /></div></div>
+            <div className="space-y-1"><Label className="text-xs font-semibold text-slate-600">پایان (اختیاری — شمسی)</Label><div className="bg-white rounded-xl border h-9 flex items-center px-1"><JalaliDatePicker value={endDate} onChange={setEndDate} placeholder="انتخاب تاریخ" allowClear /></div></div>
             <Button onClick={submitYear} variant="outline" className="shrink-0">افزودن سال <Plus className="mr-2 h-4 w-4" /></Button>
           </div>
           {years.length === 0 ? <Empty text="هنوز سال تحصیلی نساخته‌اید — کلاس‌های فعلی «بدون سال» حساب می‌شوند" /> : (
             <div className="space-y-2">{years.map((y: any) => (
               <div key={y.id} className={`flex items-center gap-2 rounded-lg p-2.5 text-sm ${y.active ? "bg-[#e6f4f1] border border-[#0f766e]/20" : "bg-slate-50"}`}>
                 <span className="font-bold flex-1">{y.title}</span>
-                {y.startDate && <Badge variant="outline" className="border-slate-200 text-slate-500 hidden sm:inline-flex">{y.startDate}</Badge>}
-                {y.endDate && <Badge variant="outline" className="border-slate-200 text-slate-500 hidden sm:inline-flex">تا {y.endDate}</Badge>}
+                {y.startDate && <Badge variant="outline" className="border-slate-200 text-slate-500 hidden sm:inline-flex">شروع {formatJalaliShort(y.startDate)}</Badge>}
+                {y.endDate && <Badge variant="outline" className="border-slate-200 text-slate-500 hidden sm:inline-flex">تا {formatJalaliShort(y.endDate)}</Badge>}
                 {y.active ? (
                   <Badge className="bg-[#0f766e] text-white shrink-0"><Star className="h-3 w-3 mr-1" />سال فعال</Badge>
                 ) : (
