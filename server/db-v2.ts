@@ -659,6 +659,14 @@ export async function listExamScores(schoolId: number, examId: number) {
   return db.select({ id: grades.id, studentId: grades.studentId, score: grades.score }).from(grades).where(eq(grades.examId, examId));
 }
 
+// فاز ۵: خواندن یک امتحان — برای اعلان نمره‌ها
+export async function getExamById(schoolId: number, examId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select({ id: exams.id, classId: exams.classId, subjectId: exams.subjectId, title: exams.title, examType: exams.examType, date: exams.date, maxScore: exams.maxScore }).from(exams).where(and(eq(exams.id, examId), eq(exams.schoolId, schoolId))).limit(1);
+  return rows[0] ?? null;
+}
+
 export async function saveExamScores(schoolId: number, examId: number, scores: Array<{ studentId: number; score: number | null }>) {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "دیتابیس در دسترس نیست" });

@@ -12,6 +12,7 @@ import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "./routers";
 import { createFetchContext } from "./_core/context";
 import { handleTelegramWebhook } from "./telegram";
+import { setExecCtx } from "./notify";
 
 export interface Env {
   DATABASE_URL: string;
@@ -28,7 +29,9 @@ export interface Env {
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, execCtx: { waitUntil: (p: Promise<unknown>) => void }): Promise<Response> {
+    // فاز ۵: اعلان‌های بات بعد از پاسخ هم زنده می‌مانند (waitUntil)
+    setExecCtx(execCtx);
     const url = new URL(req.url);
 
     // Bind Cloudflare vars/secrets into process.env so the existing config code

@@ -53,8 +53,15 @@ export async function createFetchContext(opts: {
   let user: User | null = null;
   try {
     user = await sdk.authenticateRequest(shimReq);
-  } catch {
-    user = null;
+  } catch (e) {
+    // سشن نامعتبر = مهمان (عادی)؛ ولی خطای زیرساخت (مثلاً قطع گذرای DB) نباید به
+    // «مهمان» تبدیل شود وگرنه یک درخواست معتبر با FORBIDDEN/«رمز غلط» جواب می‌دهد و
+    // حتی قفل ورود می‌خورد — خطای زیرساخت باید ۵۰۰ شود تا retry-پذیر بماند.
+    const name = String((e as Error)?.name ?? "");
+    const msg = String((e as Error)?.message ?? "");
+    const isAuthErr = name === "ForbiddenError" || /session|user not found|deactivated/i.test(msg);
+    if (isAuthErr) user = null;
+    else throw e;
   }
 
   const secure = new URL(opts.req.url).protocol === "https:";

@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, Info, RefreshCw, School, Send, Unplug, XCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { BrandingCard } from "./BrandingCard";
+import { MessagingCard } from "./MessagingCard";
 
 export function SettingsPanel({ ctx }: { ctx: any }) {
   const school = ctx.schools[0];
@@ -50,9 +51,10 @@ export function SettingsPanel({ ctx }: { ctx: any }) {
     onSuccess: d => {
       if (!d.ok) { toast.error(d.error ?? "ذخیره ناموفق بود"); return; }
       toast.success(`بات ${d.botUsername ?? ""} ذخیره شد`);
-      if (d.webhook) {
-        if (d.webhook.ok) toast.success("وب‌هوک تلگرام با موفقیت روی این سرور ثبت شد");
-        else toast.error(`ذخیره شد ولی ثبت وب‌هوک ناموفق بود: ${d.webhook.error ?? "نامشخص"}`);
+      const wh = (d as { webhook?: { ok: boolean; url?: string; error?: string } | null }).webhook;
+      if (wh) {
+        if (wh.ok) toast.success("وب‌هوک تلگرام با موفقیت روی این سرور ثبت شد");
+        else toast.error(`ذخیره شد ولی ثبت وب‌هوک ناموفق بود: ${wh.error ?? "نامشخص"}`);
       }
       setBotToken("");
       invalidateAll();
@@ -114,6 +116,9 @@ export function SettingsPanel({ ctx }: { ctx: any }) {
 
       {/* ——— فاز ۴: وایت‌لیبل — لوگو + رنگ اصلی ——— */}
       <BrandingCard ctx={ctx} />
+
+      {/* ——— فاز ۵: پیام‌رسانی (اعلان‌های خودکار + پیام همگانی) ——— */}
+      <MessagingCard botConfigured={configured} />
 
       <Card className="border-0 shadow-sm rounded-2xl">
         <CardHeader>

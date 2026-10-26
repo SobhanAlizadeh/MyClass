@@ -134,10 +134,15 @@ class SDKServer {
       throw ForbiddenError("User is deactivated");
     }
 
-    await db.upsertUser({
-      openId: user.openId,
-      lastSignedIn: new Date(),
-    });
+    // lastSignedIn حداکثر هر ۵ دقیقه به‌روز شود — نه در هر درخواست (هر به‌روزرسانی = یک
+    // رفت‌وبرگشت DB اضافه؛ روی ورکر سرد و در پیک ترافیک بی‌دلیل سنگین است)
+    const last = user.lastSignedIn ? new Date(user.lastSignedIn).getTime() : 0;
+    if (Date.now() - last > 5 * 60_000) {
+      await db.upsertUser({
+        openId: user.openId,
+        lastSignedIn: new Date(),
+      });
+    }
 
     return user;
   }

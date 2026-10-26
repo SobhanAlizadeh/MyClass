@@ -156,7 +156,8 @@ export async function updateStudent(input: { id: number; classId: number; teamId
 export async function deleteClass(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const memberRows = await db.select({ id: students.id }).from(students).where(eq(students.classId, id)); const teamRows = await db.select({ id: teams.id }).from(teams).where(eq(teams.classId, id)); for (const row of memberRows) await deleteStudent(row.id); for (const row of teamRows) await db.delete(activities).where(eq(activities.teamId, row.id)); await db.delete(teams).where(eq(teams.classId, id)); await db.delete(classes).where(eq(classes.id, id)); }
 export async function deleteTeam(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.update(students).set({ teamId: null }).where(eq(students.teamId, id)); await db.delete(activities).where(eq(activities.teamId, id)); await db.delete(teams).where(eq(teams.id, id)); }
 export async function deleteStudent(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); await db.delete(attendance).where(eq(attendance.studentId, id)); await db.delete(grades).where(eq(grades.studentId, id)); await db.delete(activities).where(eq(activities.studentId, id)); await db.delete(students).where(eq(students.id, id)); }
-export async function saveAttendance(input: { studentId: number; date: string; status: "present" | "absent" | "late" | "excused"; note?: string; period?: number | null }) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const stu = await db.select({ schoolId: students.schoolId }).from(students).where(eq(students.id, input.studentId)).limit(1); const period = input.period ?? null; const existing = await db.select().from(attendance).where(and(eq(attendance.studentId, input.studentId), eq(attendance.date, input.date), period == null ? isNull(attendance.period) : eq(attendance.period, period))).limit(1); if (existing.length > 0) return existing[0]; const absentPenalty = period == null ? 3 : 1; const absentTitle = period == null ? (input.note?.trim() ? `غیبت — ${input.note.trim()}` : "غیبت") : `غیبت زنگ ${period}`; return db.transaction(async tx => { await tx.insert(attendance).values({ studentId: input.studentId, date: input.date, status: input.status, note: input.note, period, schoolId: stu[0]?.schoolId ?? null }); if (input.status === "absent") { const row = await tx.select({ teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); await tx.insert(activities).values({ studentId: input.studentId, teamId: row[0]?.teamId ?? null, date: input.date, title: absentTitle, kind: "negative", points: -absentPenalty, schoolId: stu[0]?.schoolId ?? null }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - ${absentPenalty}` }).where(eq(students.id, input.studentId)); if (row[0]?.teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${absentPenalty}` }).where(eq(teams.id, row[0].teamId)); } return input; }); }
+export async function saveAttendance(input: { studentId: number; date: string; status: "present" | "absent" | "late" | "excused"; note?: string; period?: number | null }): Promise<{ studentId: number; date: string; status: string; period: number | null; created: boolean }> { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const stu = await db.select({ schoolId: students.schoolId }).from(students).where(eq(students.id, input.studentId)).limit(1); const period = input.period ?? null; const existing = await db.select().from(attendance).where(and(eq(attendance.studentId, input.studentId), eq(attendance.date, input.date), period == null ? isNull(attendance.period) : eq(attendance.period, period))).limit(1); if (existing.length > 0) return { studentId: input.studentId, date: input.date, status: input.status, period, created: false }; // فاز ۵: فلگ created برای جلوگیری از اعلان تکراری
+const absentPenalty = period == null ? 3 : 1; const absentTitle = period == null ? (input.note?.trim() ? `غیبت — ${input.note.trim()}` : "غیبت") : `غیبت زنگ ${period}`; return db.transaction(async tx => { await tx.insert(attendance).values({ studentId: input.studentId, date: input.date, status: input.status, note: input.note, period, schoolId: stu[0]?.schoolId ?? null }); if (input.status === "absent") { const row = await tx.select({ teamId: students.teamId }).from(students).where(eq(students.id, input.studentId)).limit(1); await tx.insert(activities).values({ studentId: input.studentId, teamId: row[0]?.teamId ?? null, date: input.date, title: absentTitle, kind: "negative", points: -absentPenalty, schoolId: stu[0]?.schoolId ?? null }); await tx.update(students).set({ totalPoints: sql`${students.totalPoints} - ${absentPenalty}` }).where(eq(students.id, input.studentId)); if (row[0]?.teamId) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${absentPenalty}` }).where(eq(teams.id, row[0].teamId)); } return { studentId: input.studentId, date: input.date, status: input.status, period, created: true }; }); }
 export async function createSubject(input: { classId: number; name: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
@@ -345,10 +346,14 @@ export type SchoolTelegramConfig = { botToken: string | null; channelId: string 
 let _schoolSettingsReady: Promise<unknown> | null = null;
 function ensureSchoolSettingsTable(conn: ReturnType<typeof connect>) {
   if (!_schoolSettingsReady) _schoolSettingsReady = (async () => {
-    await conn.execute("CREATE TABLE IF NOT EXISTS school_settings (school_id INT PRIMARY KEY, bot_token TEXT NULL, channel_id VARCHAR(128) NULL, webhook_secret VARCHAR(64) NULL, bot_username VARCHAR(64) NULL, webhook_url VARCHAR(255) NULL, referral_points DECIMAL(10,2) NULL, referral_leave_penalty TINYINT NULL, updated_at BIGINT NOT NULL DEFAULT 0)");
+    await conn.execute("CREATE TABLE IF NOT EXISTS school_settings (school_id INT PRIMARY KEY, bot_token TEXT NULL, channel_id VARCHAR(128) NULL, webhook_secret VARCHAR(64) NULL, bot_username VARCHAR(64) NULL, webhook_url VARCHAR(255) NULL, referral_points DECIMAL(10,2) NULL, referral_leave_penalty TINYINT NULL, notif_exam TINYINT NOT NULL DEFAULT 1, notif_score TINYINT NOT NULL DEFAULT 1, notif_attendance TINYINT NOT NULL DEFAULT 1, notif_points TINYINT NOT NULL DEFAULT 1, updated_at BIGINT NOT NULL DEFAULT 0)");
     // مهاجرت تنجل برای جدول‌های ساخته‌شده در نسخه‌های میانی
     await conn.execute("ALTER TABLE school_settings ADD COLUMN bot_username VARCHAR(64) NULL").catch(() => {});
     await conn.execute("ALTER TABLE school_settings ADD COLUMN webhook_url VARCHAR(255) NULL").catch(() => {});
+    await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_exam TINYINT NOT NULL DEFAULT 1").catch(() => {});
+    await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_score TINYINT NOT NULL DEFAULT 1").catch(() => {});
+    await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_attendance TINYINT NOT NULL DEFAULT 1").catch(() => {});
+    await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_points TINYINT NOT NULL DEFAULT 1").catch(() => {});
   })().catch(e => { _schoolSettingsReady = null; throw e; });
   return _schoolSettingsReady;
 }
@@ -399,6 +404,164 @@ export async function findSchoolIdByBotToken(token: string, exceptSchoolId?: num
   if (!row) return null;
   const id = Number(row.school_id);
   return exceptSchoolId != null && id === exceptSchoolId ? null : id;
+}
+
+// ——— فاز ۵: اعلان‌های خودکار بات (تگل‌های per-school) ———
+export type NotifyToggles = { exam: boolean; score: boolean; attendance: boolean; points: boolean };
+export async function getNotifyToggles(schoolId: number): Promise<NotifyToggles> {
+  const conn = getRawConn();
+  if (!conn) return { exam: true, score: true, attendance: true, points: true };
+  await ensureSchoolSettingsTable(conn);
+  const res: any = await conn.execute("SELECT notif_exam, notif_score, notif_attendance, notif_points FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  return {
+    exam: row ? Number(row.notif_exam ?? 1) === 1 : true,
+    score: row ? Number(row.notif_score ?? 1) === 1 : true,
+    attendance: row ? Number(row.notif_attendance ?? 1) === 1 : true,
+    points: row ? Number(row.notif_points ?? 1) === 1 : true,
+  };
+}
+export async function setNotifyToggles(schoolId: number, t: Partial<NotifyToggles>): Promise<NotifyToggles> {
+  const conn = getRawConn();
+  if (!conn) return { exam: true, score: true, attendance: true, points: true };
+  await ensureSchoolSettingsTable(conn);
+  await conn.execute(
+    "INSERT INTO school_settings (school_id, notif_exam, notif_score, notif_attendance, notif_points, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE notif_exam = VALUES(notif_exam), notif_score = VALUES(notif_score), notif_attendance = VALUES(notif_attendance), notif_points = VALUES(notif_points), updated_at = VALUES(updated_at)",
+    [schoolId, t.exam === false ? 0 : 1, t.score === false ? 0 : 1, t.attendance === false ? 0 : 1, t.points === false ? 0 : 1, Date.now()]
+  );
+  return getNotifyToggles(schoolId);
+}
+
+// ——— فاز ۵: کوئری‌های خدمات بات ———
+// دانش‌آموزِ متصل به یک اکانت تلگرام (از طریق ردیف referral — اتصال حساب هنگام فرستادن نام ساخته می‌شود)
+export type LinkedStudent = { studentId: number; classId: number | null; firstName: string; lastName: string; className: string | null; teamName: string | null; totalPoints: number; chatId: number; graduated: number };
+export async function findLinkedStudentByTgUser(tgUserId: number, schoolId: number): Promise<LinkedStudent | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  const res: any = await conn.execute(
+    "SELECT s.id, s.classId, s.firstName, s.lastName, s.totalPoints, s.graduated, COALESCE(r.telegram_chat_id, r.telegram_user_id) AS chat_id, c.name AS class_name, t.name AS team_name FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId LEFT JOIN teams t ON t.id = s.teamId WHERE r.telegram_user_id = ? AND s.schoolId = ? ORDER BY r.id DESC LIMIT 1",
+    [tgUserId, schoolId]
+  );
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  if (!row) return null;
+  return { studentId: Number(row.id), classId: row.classId != null ? Number(row.classId) : null, firstName: String(row.firstName ?? ""), lastName: String(row.lastName ?? ""), className: row.class_name != null ? String(row.class_name) : null, teamName: row.team_name != null ? String(row.team_name) : null, totalPoints: round2(row.totalPoints), chatId: Number(row.chat_id), graduated: Number(row.graduated ?? 0) };
+}
+
+// همه دانش‌آموزان متصل (اکانت تلگرام دارند) — برای اعلان گروهی/پیام همگانی
+export async function listLinkedStudents(schoolId: number, classId?: number | null): Promise<LinkedStudent[]> {
+  const conn = getRawConn();
+  if (!conn) return [];
+  const where = "r.telegram_user_id IS NOT NULL AND s.schoolId = ?" + (classId != null ? " AND s.classId = ?" : "");
+  const params: unknown[] = classId != null ? [schoolId, classId] : [schoolId];
+  const res: any = await conn.execute(
+    "SELECT s.id, s.classId, s.firstName, s.lastName, s.totalPoints, s.graduated, COALESCE(r.telegram_chat_id, r.telegram_user_id) AS chat_id, c.name AS class_name, t.name AS team_name FROM referrals r JOIN students s ON s.id = r.student_id LEFT JOIN classes c ON c.id = s.classId LEFT JOIN teams t ON t.id = s.teamId WHERE " + where + " ORDER BY c.id, s.id LIMIT 1000",
+    params
+  );
+  const rows: any[] = Array.isArray(res) ? res : res.rows ?? [];
+  const seen = new Set<number>();
+  const out: LinkedStudent[] = [];
+  for (const row of rows) {
+    const sid = Number(row.id);
+    if (seen.has(sid)) continue; // چند ردیف referral برای یک دانش‌آموز → فقط اولی
+    seen.add(sid);
+    out.push({ studentId: sid, classId: row.classId != null ? Number(row.classId) : null, firstName: String(row.firstName ?? ""), lastName: String(row.lastName ?? ""), className: row.class_name != null ? String(row.class_name) : null, teamName: row.team_name != null ? String(row.team_name) : null, totalPoints: round2(row.totalPoints), chatId: Number(row.chat_id), graduated: Number(row.graduated ?? 0) });
+  }
+  return out;
+}
+
+// شمارش متصل‌ها به تفکیک کلاس — برای کارت پیام‌رسانی پنل
+export async function linkedCountsByClass(schoolId: number): Promise<Array<{ classId: number; className: string; total: number; linked: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  const classRows = await db.select({ id: classes.id, name: classes.name }).from(classes).where(eq(classes.schoolId, schoolId)).orderBy(asc(classes.id));
+  const res: any = await getRawConn()?.execute(
+    "SELECT s.classId, COUNT(DISTINCT s.id) AS total, COUNT(DISTINCT r.telegram_user_id) AS linked FROM students s LEFT JOIN referrals r ON r.student_id = s.id WHERE s.schoolId = ? AND s.graduated = 0 GROUP BY s.classId",
+    [schoolId]
+  );
+  const rows: any[] = res ? (Array.isArray(res) ? res : res.rows ?? []) : [];
+  const map = new Map<number, { total: number; linked: number }>();
+  for (const row of rows) map.set(Number(row.classId), { total: Number(row.total ?? 0), linked: Number(row.linked ?? 0) });
+  return classRows.map(c => ({ classId: c.id, className: c.name, total: map.get(c.id)?.total ?? 0, linked: map.get(c.id)?.linked ?? 0 }));
+}
+
+// خلاصه امتیاز دانش‌آموز برای بات (مجموع + ۵ فعالیت آخر)
+export async function studentPointsSummary(studentId: number): Promise<{ total: number; recent: Array<{ title: string; points: number; date: string }> } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const stu = await db.select({ totalPoints: students.totalPoints }).from(students).where(eq(students.id, studentId)).limit(1);
+  if (!stu[0]) return null;
+  const acts = await db.select({ title: activities.title, points: activities.points, date: activities.date }).from(activities).where(eq(activities.studentId, studentId)).orderBy(desc(activities.date), desc(activities.id)).limit(5);
+  return { total: round2(stu[0].totalPoints), recent: acts.map(a => ({ title: a.title, points: round2(a.points), date: a.date })) };
+}
+
+// خلاصه نمرات دانش‌آموز برای بات (میانگین هر درس + ۵ نمره آخر)
+export async function studentGradesSummary(schoolId: number, studentId: number): Promise<{ subjects: Array<{ name: string; avg: number | null; count: number }>; recent: Array<{ title: string; subject: string | null; score: number; maxScore: number; date: string }> } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const stu = await db.select({ id: students.id }).from(students).where(and(eq(students.id, studentId), eq(students.schoolId, schoolId))).limit(1);
+  if (!stu[0]) return null;
+  const gradeRows = await db.select({ subjectId: grades.subjectId, score: grades.score, maxScore: grades.maxScore, date: grades.date, title: grades.title, subjectName: subjects.name })
+    .from(grades).leftJoin(subjects, eq(subjects.id, grades.subjectId))
+    .where(and(eq(grades.studentId, studentId), eq(grades.schoolId, schoolId)))
+    .orderBy(desc(grades.date), desc(grades.id)).limit(400);
+  const bySubject = new Map<number | null, { sum: number; count: number }>();
+  for (const g of gradeRows) {
+    const max = Number(g.maxScore) || 20;
+    const norm = (Number(g.score) / max) * 20;
+    const key = g.subjectId ?? null;
+    const cur = bySubject.get(key) ?? { sum: 0, count: 0 };
+    cur.sum += norm; cur.count += 1;
+    bySubject.set(key, cur);
+  }
+  const subjectAverages = Array.from(bySubject.entries()).map(([sid, v]) => ({ name: gradeRows.find(g => (g.subjectId ?? null) === sid)?.subjectName ?? (sid == null ? "بدون درس" : "درس"), avg: Math.round((v.sum / v.count) * 100) / 100, count: v.count }));
+  return {
+    subjects: subjectAverages,
+    recent: gradeRows.slice(0, 5).map(g => ({ title: g.title, subject: g.subjectName ?? null, score: round2(g.score), maxScore: Number(g.maxScore) || 20, date: g.date })),
+  };
+}
+
+// خلاصه حضور و غیاب دانش‌آموز برای بات (امسال — ۹۰ روز اخیر)
+export async function studentAttendanceSummary(studentId: number): Promise<{ present: number; absent: number; late: number; excused: number; absentPeriods: number } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const stu = await db.select({ id: students.id }).from(students).where(eq(students.id, studentId)).limit(1);
+  if (!stu[0]) return null;
+  const rows = await db.select({ status: attendance.status, period: attendance.period }).from(attendance).where(eq(attendance.studentId, studentId)).limit(600);
+  const out = { present: 0, absent: 0, late: 0, excused: 0, absentPeriods: 0 };
+  for (const r of rows) {
+    if (r.status === "present") out.present += 1;
+    else if (r.status === "absent") { if (r.period != null) out.absentPeriods += 1; else out.absent += 1; }
+    else if (r.status === "late") out.late += 1;
+    else if (r.status === "excused") out.excused += 1;
+  }
+  return out;
+}
+
+// اعضای تیم با سهم امتیازشان (مثل distributeTeamPoints) — برای اعلان فعالیت تیمی
+export async function teamMemberShares(teamId: number, points: number): Promise<Array<{ studentId: number; share: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  const memberRows = await db.select({ id: students.id }).from(students).where(eq(students.teamId, teamId));
+  const shares = distributeTeamPoints(points, memberRows.length);
+  return memberRows.map((m, i) => ({ studentId: m.id, share: shares[i] ?? 0 }));
+}
+
+// نام درس برای متن اعلان امتحان
+export async function subjectNameById(schoolId: number, subjectId: number | null): Promise<string | null> {
+  if (subjectId == null) return null;
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select({ name: subjects.name }).from(subjects).where(and(eq(subjects.id, subjectId), eq(subjects.schoolId, schoolId))).limit(1);
+  return rows[0]?.name ?? null;
+}
+
+// telegram_user_id یک دانش‌آموز (از referrals) — برای اعلان امتیاز فردی
+export async function getStudentTgUserId(studentId: number): Promise<number | null> {
+  const conn = getRawConn();
+  if (!conn) return null;
+  const res: any = await conn.execute("SELECT telegram_user_id FROM referrals WHERE student_id = ? AND telegram_user_id IS NOT NULL ORDER BY id DESC LIMIT 1", [studentId]);
+  const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
+  return row ? Number(row.telegram_user_id) : null;
 }
 
 // امتیاز دعوت مؤثر: تنظیم مدیر مدرسه ← سکرت env ← پیش‌فرض ۳

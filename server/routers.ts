@@ -6,7 +6,9 @@ import { sdk } from "./_core/sdk";
 import { publicProcedure, protectedProcedure, router, superAdminProcedure, schedulerProcedure, teacherProcedure, managerOnlyProcedure, schoolAnyProcedure } from "./_core/trpc";
 import {
   getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, listReferrals, getReferralReport, deleteReferral, getReferralSettings, setReferralPoints, setReferralLeavePenalty, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade, updateSchool,
+  getNotifyToggles, setNotifyToggles, linkedCountsByClass, subjectNameById,
 } from "./db";
+import { runDetached, notifyExamCreated, notifyScoresSaved, notifyAttendanceRecorded, notifyPointActivity, notifyTeamActivity, notifyGradeRecorded, broadcastFromPanel } from "./notify";
 import {
   authenticateSchoolUser, computeSchoolRuntime, superOpenId, schoolUserOpenId, isSuperAdmin,
   listSchoolsWithStats, createTenantSchool, updateTenantSchool, deleteTenantSchool,
@@ -14,7 +16,7 @@ import {
   getDefaultPublicSchool, assertTenantOwned, getSchoolUserOwned, countActiveManagers,
   listAcademicYears, createAcademicYear, setActiveAcademicYear, deleteAcademicYear,
   listScheduleSlots, setScheduleSlot, promotionPreview, promotionApply,
-  listExamsWithStats, listExamsBetween, createExam, updateExam, deleteExam, listExamScores, saveExamScores,
+  listExamsWithStats, listExamsBetween, createExam, updateExam, deleteExam, listExamScores, saveExamScores, getExamById,
   listEvents, createEvent, updateEvent, moveEvent, moveExam, deleteEvent,
   getPointsGradeConfig, setPointsGradeConfig, pointsGradePreview, pointsGradeApply,
   getStudentReportCard, ensureParentCode, setParentInfo, getSchoolBranding, setSchoolBranding, getParentReportCard,
@@ -195,6 +197,21 @@ export const appRouter = router({
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
       return disconnectSchoolBot(ctx.schoolId);
     }),
+    // ——— فاز ۵: اعلان‌های خودکار + پیام‌رسانی ———
+    notifSettings: managerOnlyProcedure.query(async ({ ctx }) => {
+      if (ctx.schoolId == null) return { exam: true, score: true, attendance: true, points: true, byClass: [] };
+      const [toggles, byClass] = await Promise.all([getNotifyToggles(ctx.schoolId), linkedCountsByClass(ctx.schoolId).catch(() => [])]);
+      return { ...toggles, byClass };
+    }),
+    setNotifSettings: managerOnlyProcedure.input(z.object({ exam: z.boolean(), score: z.boolean(), attendance: z.boolean(), points: z.boolean() })).mutation(({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
+      return setNotifyToggles(ctx.schoolId, input);
+    }),
+    broadcast: managerOnlyProcedure.input(z.object({ classId: z.number().int().positive().nullable(), text: z.string().min(1).max(2000) })).mutation(async ({ ctx, input }) => {
+      if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ارسال پیام فقط از پنل مدرسه انجام می‌شود" });
+      if (input.classId != null) await assertTenantOwned(ctx.schoolId, "class", input.classId);
+      return broadcastFromPanel(ctx.schoolId, input);
+    }),
   }),
   // داده‌های مدرسه — همه اسکوپ‌شده به مدرسه کاربر
   school: router({
@@ -215,17 +232,47 @@ export const appRouter = router({
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
       return setParentInfo(ctx.schoolId, input.studentId, input);
     }),
-    attendance: teacherProcedure.input(z.object({ studentId: z.number(), date, status: z.enum(["present", "absent", "late", "excused"]), note: z.string().optional(), period: z.number().int().min(1).max(10).nullable().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveAttendance(input); }),
+    attendance: teacherProcedure.input(z.object({ studentId: z.number(), date, status: z.enum(["present", "absent", "late", "excused"]), note: z.string().optional(), period: z.number().int().min(1).max(10).nullable().optional() })).mutation(async ({ ctx, input }) => {
+      await assertTenantOwned(ctx.schoolId, "student", input.studentId);
+      const rec = await saveAttendance(input);
+      if (ctx.schoolId != null) runDetached(notifyAttendanceRecorded(ctx.schoolId, rec).catch(() => {}));
+      return rec;
+    }),
     addSubject: teacherProcedure.input(z.object({ classId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return createSubject(input); }),
     updateSubject: teacherProcedure.input(z.object({ id: z.number(), classId: z.number(), name: z.string().min(1) })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.classId); return updateSubject(input); }),
     deleteSubject: teacherProcedure.input(z.object({ id: z.number() })).mutation(({ input }) => deleteSubject(input.id)),
-    grade: teacherProcedure.input(z.object({ studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]).default("class"), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveGrade(input); }),
+    grade: teacherProcedure.input(z.object({ studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]).default("class"), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(async ({ ctx, input }) => {
+      await assertTenantOwned(ctx.schoolId, "student", input.studentId);
+      const saved = await saveGrade(input);
+      if (ctx.schoolId != null) runDetached(notifyGradeRecorded(ctx.schoolId, { studentId: input.studentId, title: input.title, score: input.score, maxScore: input.maxScore }).catch(() => {}));
+      return saved;
+    }),
     updateGrade: teacherProcedure.input(z.object({ id: z.number(), studentId: z.number(), subjectId: z.number().nullable().optional(), gradeType: z.enum(["class", "midterm", "final"]), title: z.string().min(1), score: z.number().min(0), maxScore: z.number().positive(), date, note: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "grade", input.id); await assertTenantOwned(ctx.schoolId, "student", input.studentId); return updateGrade(input); }),
     deleteGrade: teacherProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "grade", input.id); return deleteGrade(input.id); }),
-    activity: teacherProcedure.input(z.object({ studentId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return saveActivity(input); }),
-    spendStudent: teacherProcedure.input(z.object({ studentId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.studentId); return consumeStudentPoints(input); }),
-    spendTeam: teacherProcedure.input(z.object({ teamId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "team", input.teamId); return consumeTeamPoints(input); }),
-    teamActivity: teacherProcedure.input(z.object({ teamId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "team", input.teamId); return saveTeamActivity(input); }),
+    activity: teacherProcedure.input(z.object({ studentId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(async ({ ctx, input }) => {
+      await assertTenantOwned(ctx.schoolId, "student", input.studentId);
+      const saved = await saveActivity(input);
+      if (ctx.schoolId != null && input.points !== 0) runDetached(notifyPointActivity(ctx.schoolId, { studentId: input.studentId, title: input.title, description: input.description, points: input.points }).catch(() => {}));
+      return saved;
+    }),
+    spendStudent: teacherProcedure.input(z.object({ studentId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(async ({ ctx, input }) => {
+      await assertTenantOwned(ctx.schoolId, "student", input.studentId);
+      const saved = await consumeStudentPoints(input);
+      if (ctx.schoolId != null) runDetached(notifyPointActivity(ctx.schoolId, { studentId: input.studentId, title: "مصرف امتیاز", description: input.description, points: -Math.abs(input.points) }).catch(() => {}));
+      return saved;
+    }),
+    spendTeam: teacherProcedure.input(z.object({ teamId: z.number(), date, description: z.string().min(1), points: z.number().positive() })).mutation(async ({ ctx, input }) => {
+      await assertTenantOwned(ctx.schoolId, "team", input.teamId);
+      const saved = await consumeTeamPoints(input);
+      if (ctx.schoolId != null) runDetached(notifyTeamActivity(ctx.schoolId, { teamId: input.teamId, title: "مصرف امتیاز تیم", description: input.description, points: -Math.abs(input.points) }).catch(() => {}));
+      return saved;
+    }),
+    teamActivity: teacherProcedure.input(z.object({ teamId: z.number(), date, title: z.string().min(1), description: z.string().optional(), kind: z.enum(["positive", "negative", "neutral"]), points: z.number().finite() })).mutation(async ({ ctx, input }) => {
+      await assertTenantOwned(ctx.schoolId, "team", input.teamId);
+      const saved = await saveTeamActivity(input);
+      if (ctx.schoolId != null && input.points !== 0) runDetached(notifyTeamActivity(ctx.schoolId, { teamId: input.teamId, title: input.title, description: input.description, points: input.points }).catch(() => {}));
+      return saved;
+    }),
     updateClass: schedulerProcedure.input(z.object({ id: z.number(), name: z.string().min(1), grade: z.string().optional(), schoolYear: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "class", input.id); return updateClass({ ...input, schoolId: ctx.schoolId ?? null }); }),
     updateTeam: schedulerProcedure.input(z.object({ id: z.number(), name: z.string().min(1), color: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "team", input.id); return updateTeam(input); }),
     updateStudent: schedulerProcedure.input(z.object({ id: z.number(), classId: z.number(), teamId: z.number().nullable().optional(), firstName: z.string().min(1), lastName: z.string().min(1), studentCode: z.string().optional() })).mutation(async ({ ctx, input }) => { await assertTenantOwned(ctx.schoolId, "student", input.id); await assertTenantOwned(ctx.schoolId, "class", input.classId); return updateStudent(input); }),
@@ -278,12 +325,14 @@ export const appRouter = router({
     create: teacherProcedure.input(z.object({ classId: z.number().int().positive(), subjectId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(160), examType: z.enum(["quiz", "homework", "practice", "midterm", "final"]).default("quiz"), date, maxScore: z.number().int().min(1).max(1000).default(20), weight: z.number().int().min(1).max(10).default(1), note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ثبت امتحان فقط از پنل مدرسه انجام می‌شود" });
       await assertTenantOwned(ctx.schoolId, "class", input.classId);
-      return createExam(ctx.schoolId, input);
+      const examId = await createExam(ctx.schoolId, { ...input, subjectId: input.subjectId ?? null });
+      runDetached(notifyExamCreated(ctx.schoolId, { id: examId, classId: input.classId, subjectId: input.subjectId ?? null, title: input.title, examType: input.examType, date: input.date, maxScore: input.maxScore }).catch(() => {}));
+      return examId;
     }),
     update: teacherProcedure.input(z.object({ id: z.number().int().positive(), subjectId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(160), examType: z.enum(["quiz", "homework", "practice", "midterm", "final"]), date, maxScore: z.number().int().min(1).max(1000), weight: z.number().int().min(1).max(10).default(1), note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ویرایش امتحان فقط از پنل مدرسه انجام می‌شود" });
       await assertTenantOwned(ctx.schoolId, "exam", input.id);
-      return updateExam(ctx.schoolId, input);
+      return updateExam(ctx.schoolId, { ...input, subjectId: input.subjectId ?? null });
     }),
     remove: teacherProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "حذف امتحان فقط از پنل مدرسه انجام می‌شود" });
@@ -294,7 +343,13 @@ export const appRouter = router({
     scores: teacherProcedure.input(z.object({ examId: z.number().int().positive(), scores: z.array(z.object({ studentId: z.number().int().positive(), score: z.number().min(0).max(1000).nullable() })).max(200) })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ثبت نمره فقط از پنل مدرسه انجام می‌شود" });
       await assertTenantOwned(ctx.schoolId, "exam", input.examId);
-      return saveExamScores(ctx.schoolId, input.examId, input.scores);
+      const result = await saveExamScores(ctx.schoolId, input.examId, input.scores);
+      const exam = await getExamById(ctx.schoolId, input.examId).catch(() => null);
+      if (exam) {
+        const subject = await subjectNameById(ctx.schoolId, exam.subjectId).catch(() => null);
+        runDetached(notifyScoresSaved(ctx.schoolId, { examId: exam.id, title: exam.title, maxScore: exam.maxScore, date: exam.date, subjectName: subject }, input.scores).catch(() => {}));
+      }
+      return result;
     }),
     move: teacherProcedure.input(z.object({ id: z.number().int().positive(), date })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "جابجایی امتحان فقط از پنل مدرسه انجام می‌شود" });
@@ -307,12 +362,12 @@ export const appRouter = router({
     list: schoolAnyProcedure.input(z.object({ from: date, to: date })).query(({ ctx, input }) => ctx.schoolId == null ? [] : listEvents(ctx.schoolId, input.from, input.to)),
     create: teacherProcedure.input(z.object({ classId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(180), kind: z.enum(["exam", "homework", "activity", "meeting", "other"]).default("other"), date, note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ثبت رویداد فقط از پنل مدرسه انجام می‌شود" });
-      return createEvent(ctx.schoolId, input);
+      return createEvent(ctx.schoolId, { ...input, classId: input.classId ?? null });
     }),
     update: teacherProcedure.input(z.object({ id: z.number().int().positive(), classId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(180), kind: z.enum(["exam", "homework", "activity", "meeting", "other"]), date, note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ویرایش رویداد فقط از پنل مدرسه انجام می‌شود" });
       await assertTenantOwned(ctx.schoolId, "event", input.id);
-      return updateEvent(ctx.schoolId, input);
+      return updateEvent(ctx.schoolId, { ...input, classId: input.classId ?? null });
     }),
     move: teacherProcedure.input(z.object({ id: z.number().int().positive(), date })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "جابجایی رویداد فقط از پنل مدرسه انجام می‌شود" });

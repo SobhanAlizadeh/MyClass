@@ -43,6 +43,7 @@ import {
   clearSchoolTelegram,
   findSchoolIdByBotToken,
 } from "./db";
+import { handleMenuService, mainMenuText, MAIN_MENU_KB } from "./notify";
 
 // ---------- config ----------
 const CHANNEL_FALLBACK = "@takrahtop";
@@ -212,6 +213,7 @@ function candidateKeyboard(candidates: { id: number; firstName: string; lastName
   };
 }
 
+// اتصال حساب + لینک دعوت (فاز ۵: اتصال حتی بدون کانال هم حساب را برای خدمات وصل می‌کند)
 async function sendReferralLink(cfg: TgCfg, chatId: number, studentId: number, tgUser: any): Promise<void> {
   const ref = await getOrCreateReferral(studentId, {
     userId: tgUser?.id,
@@ -222,38 +224,26 @@ async function sendReferralLink(cfg: TgCfg, chatId: number, studentId: number, t
     await sendMessage(cfg, chatId, "⚠️ خطا در ثبت لینک؛ کمی بعد دوباره تلاش کنید.");
     return;
   }
-  let link = ref.inviteLink;
-  if (!link) {
-    if (!cfg.channelId || !cfg.token) {
-      await sendMessage(cfg, chatId, "⚠️ بات مدرسه هنوز کامل تنظیم نشده است؛ از مدیر مدرسه بپرسید در پنل، بخش تنظیمات، بات تلگرام را وصل کند.");
-      return;
-    }
+  let link: string | null = ref.inviteLink || null;
+  if (!link && cfg.channelId && cfg.token) {
     const created = await tg(cfg, "createChatInviteLink", { chat_id: cfg.channelId, name: `ref-${ref.code}` });
     if (created?.ok && created.result?.invite_link) {
       link = String(created.result.invite_link);
       await setReferralInviteLink(ref.id, link);
-    } else {
-      await sendMessage(cfg, chatId, [
-        "⚠️ ساخت لینک اختصاصی ممکن نشد.",
-        "",
-        `دلیل فنی: ${created?.description ?? "نامشخص"}`,
-        "",
-        "معمولاً یعنی بات هنوز ادمین کانال با مجوز «Invite Users via Link» نیست.",
-      ].join("\n"));
-      return;
     }
+    // خطای ساخت لینک → ادامه می‌دهیم؛ اتصال حساب انجام شده و پیام زیر وضعیت را توضیح می‌دهد
   }
   const pts = await referralPoints(cfg.schoolId);
-  await sendMessage(cfg, chatId, [
-    `سلام ${ref.studentName} 👋`,
-    "",
-    "این لینک اختصاصی شما برای عضویت در کانال است:",
-    link,
-    "",
-    `هر کس با این لینک عضو کانال شود، ${pts} امتیاز به شما اضافه می‌شود. لینک را برای دوستانتان بفرستید!`,
-    "",
-    `کد شما: ${ref.code}`,
-  ].join("\n"));
+  const lines: string[] = [`سلام ${ref.studentName} 👋`, ""];
+  if (link) {
+    lines.push("این لینک اختصاصی شما برای عضویت در کانال است:", link, "", `هر کس با این لینک عضو کانال شود، ${pts} امتیاز به شما اضافه می‌شود. لینک را برای دوستانتان بفرستید!`, "", `کد شما: ${ref.code}`, "");
+  } else if (!cfg.channelId) {
+    lines.push("✅ حساب شما به دفترکلاس وصل شد!", "", `کد دعوت شما: ${ref.code} (بعد از وصل‌کردن کانال توسط مدیر، لینک اختصاصی می‌گیرید)`, "");
+  } else {
+    lines.push("✅ حساب شما وصل شد؛ ولی ساخت لینک اختصاصی ممکن نشد.", `دلیل فنی: بات ادمین کانال با مجوز «Invite Users via Link» نیست.`, "");
+  }
+  lines.push("🎁 از منوی زیر می‌توانید امتیاز، نمرات، امتحان‌ها و حضور خود را ببینید:");
+  await sendMessage(cfg, chatId, lines.join("\n"), MAIN_MENU_KB);
   // این اکانت حالا لینک دارد — دیگر پیام معرفی افیلیت برایش نمی‌رود
   if (Number(tgUser?.id) > 0) await markTelegramPrompt(Number(tgUser.id), "has_link", chatId, null).catch(() => {});
 }
@@ -287,6 +277,14 @@ async function handleMessage(cfg: TgCfg, msg: any): Promise<void> {
   }
   if (chatType !== "private") return;
 
+  // فاز ۵: دستورهای خدمات — فقط برای اکانت‌های متصل (svc منو)
+  const svcCommand = text.match(/^\/(points|grades|exams|attendance|parent|menu|help)\b/);
+  if (svcCommand) {
+    const map: Record<string, string> = { points: "points", grades: "grades", exams: "exams", attendance: "att", parent: "parent", menu: "home", help: "home" };
+    await handleMenuService({ schoolId: cfg.schoolId ?? 0 }, chatId, from.id, map[svcCommand[1]]);
+    return;
+  }
+
   if (text.startsWith("/start") || text.startsWith("/link") || text.startsWith("/mylink")) {
     const existing = await getLatestReferralByTelegramUser(from.id, cfg.schoolId);
     if (existing?.inviteLink) {
@@ -298,13 +296,18 @@ async function handleMessage(cfg: TgCfg, msg: any): Promise<void> {
         existing.inviteLink,
         "",
         `هر عضو از طریق این لینک = ${pts} امتیاز برای شما. کد شما: ${existing.code}`,
-      ].join("\n"));
+        "",
+        "🎁 منوی خدمات:",
+      ].join("\n"), MAIN_MENU_KB);
       return;
     }
+    // فاز ۵: اگر حساب وصل است ولی لینک ندارد (کانال تنظیم نشده) → منو
+    const linked = await handleMenuService({ schoolId: cfg.schoolId ?? 0 }, chatId, from.id, "home");
+    if (linked) return;
     await sendMessage(cfg, chatId, [
       "سلام! 👋",
       "",
-      "برای گرفتن لینک اختصاصی دعوت، نام و نام خانوادگی خود را دقیقاً همان‌طور که در سایت دفترکلاس ثبت شده بفرستید.",
+      "برای اتصال به دفترکلاس و گرفتن لینک اختصاصی دعوت، نام و نام خانوادگی خود را دقیقاً همان‌طور که در سایت ثبت شده بفرستید.",
       "",
       "مثال: پارسا مقدوری",
     ].join("\n"));
@@ -337,9 +340,15 @@ async function handleCallbackQuery(cfg: TgCfg, cq: any): Promise<void> {
   const chatId = cq?.message?.chat?.id;
   const from = cq?.from;
   const data = String(cq?.data ?? "");
-  if (!chatId || !from || !data.startsWith("ref:")) return;
-  const studentId = Number(data.slice(4));
+  if (!chatId || !from || !data) return;
   await tg(cfg, "answerCallbackQuery", { callback_query_id: cq.id });
+  // فاز ۵: منوی خدمات (امتیاز/نمرات/امتحان‌ها/حضور/والد)
+  if (data.startsWith("svc:")) {
+    await handleMenuService({ schoolId: cfg.schoolId ?? 0 }, chatId, from.id, data.slice(4));
+    return;
+  }
+  if (!data.startsWith("ref:")) return;
+  const studentId = Number(data.slice(4));
   if (!Number.isInteger(studentId) || studentId <= 0) {
     await sendMessage(cfg, chatId, "این انتخاب معتبر نیست؛ دوباره نام خود را بفرستید.");
     return;
