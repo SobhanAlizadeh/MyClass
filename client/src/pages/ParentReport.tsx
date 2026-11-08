@@ -108,7 +108,7 @@ export default function ParentReport() {
             </div>
 
             {/* ——— تب‌ها ——— */}
-            <div className="flex gap-1.5 overflow-x-auto pb-1" data-testid="portal-tabs">
+            <div className="tab-scroll gap-1.5 pb-1" data-testid="portal-tabs">
               {tabs.map(t => (
                 <button key={t.id} onClick={() => setTab(t.id)} data-testid={`tab-${t.id}`}
                   className="shrink-0 flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-bold transition-colors"

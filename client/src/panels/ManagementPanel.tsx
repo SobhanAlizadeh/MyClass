@@ -75,10 +75,10 @@ export function ManagementPanel({ ctx, role }: { ctx: any; role?: string }) {
 
   return (
     <div className="mobile-panel panel-management space-y-4">
-      {/* نوار زیرتب‌ها */}
-      <div className="grid gap-1 rounded-2xl bg-white p-1.5 shadow-sm border" style={{ gridTemplateColumns: `repeat(${SUBTABS.length}, minmax(0, 1fr))` }}>
+      {/* نوار زیرتب‌ها — در موبایل به‌جای له‌شدن، افقی اسکرول می‌شود */}
+      <div className="tab-scroll gap-1 rounded-2xl bg-white p-1.5 shadow-sm border" data-testid="management-subtabs">
         {SUBTABS.map(({ key, label, icon: Icon }) => (
-          <button key={key} type="button" onClick={() => switchTab(key)} className={`rounded-xl px-1 py-2 text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${tab === key ? "bg-[#0f766e] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+          <button key={key} type="button" onClick={() => switchTab(key)} className={`rounded-xl px-3 sm:px-4 py-2 text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${tab === key ? "bg-[#0f766e] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
             <Icon className="h-3.5 w-3.5" />{label}
           </button>
         ))}

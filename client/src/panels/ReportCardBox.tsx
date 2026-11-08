@@ -51,7 +51,7 @@ export function ReportCardBox({ ctx }: { ctx: any }) {
   };
 
   return (
-    <Card className="border-0 shadow-sm rounded-2xl print:hidden" data-testid="report-card-box">
+    <Card className="mobile-panel panel-reports border-0 shadow-sm rounded-2xl print:hidden" data-testid="report-card-box">
       <CardHeader className="flex-row items-center justify-between">
         <div>
           <CardTitle className="text-lg flex items-center gap-2"><FileText className="h-5 w-5 text-[#0f766e]" /> کارنامه دانش‌آموز</CardTitle>

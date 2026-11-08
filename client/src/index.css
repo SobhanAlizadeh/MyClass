@@ -234,6 +234,22 @@
 .dark .app-shell .shadow-lg { box-shadow: 0 8px 30px oklch(0 0 0 / 22%) !important; }
 .dark .app-shell .mobile-panel-nav button:not(.bg-\[\#0f766e\]) { color: oklch(0.78 0.015 175) !important; }
 
+/* ——— نوار تب‌های اسکرول‌شونده ———
+   در موبایل که جا کم است، تب‌ها به‌جای له‌شدن به‌صورت افقی اسکرول می‌شوند:
+   بدون نوار اسکرول، اسکرول روان لمسی و جلوگیری از پرش صفحه هنگام کشیدن افقی. */
+.tab-scroll {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.tab-scroll::-webkit-scrollbar { display: none; }
+.tab-scroll > * { flex-shrink: 0; }
+
 @media print {
   @page { size: auto; margin: 10mm; }
   html, body, #root { height: auto !important; min-height: 0 !important; overflow: visible !important; background: #fff !important; }
