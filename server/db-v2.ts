@@ -346,6 +346,29 @@ export async function getDefaultPublicSchool(): Promise<School | undefined> {
   return rows[0];
 }
 
+// تابلوی عمومی چندمدرسه‌ای: فهرست کمینه مدارس فعال (کد + نام) برای انتخابگر قابل جستجو
+export async function listPublicSchools(): Promise<{ code: string; name: string }[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ code: schools.code, name: schools.name }).from(schools).where(eq(schools.status, "active")).orderBy(asc(schools.name));
+  return rows.filter(r => !!r.code).map(r => ({ code: String(r.code), name: r.name }));
+}
+
+// وایت‌لیبل تابلوی عمومی برای مدرسه دلخواه (با کد)؛ بدون کد = نخستین مدرسه فعال
+export async function getPublicBranding(schoolCode?: string): Promise<{ schoolName: string; logoData: string | null; primaryColor: string | null }> {
+  const db = await getDb();
+  if (!db) return { schoolName: "", logoData: null, primaryColor: null };
+  let school: School | undefined;
+  if (schoolCode) {
+    const rows = await db.select().from(schools).where(and(eq(schools.code, schoolCode.trim().toUpperCase()), eq(schools.status, "active"))).limit(1);
+    school = rows[0];
+  }
+  if (!school) school = await getDefaultPublicSchool();
+  if (!school) return { schoolName: "", logoData: null, primaryColor: null };
+  const b = await getSchoolBranding(school.id);
+  return { schoolName: school.name, logoData: b.logoData, primaryColor: b.primaryColor };
+}
+
 // --- Academic years (فاز ۲ ادامه می‌دهد؛ فهرست/ساخت پایه از حالا) -----------------
 export async function listAcademicYears(schoolId: number) {
   const db = await getDb();

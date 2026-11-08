@@ -11,16 +11,27 @@ const check = (name, ok, detail = "") => { console.log(`${ok ? "✅" : "❌"} ${
 
 async function trpc(name, input, token, isQuery = false) {
   let res;
-  if (isQuery) {
-    const qs = input ? `?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: input } }))}` : "?batch=1";
-    res = await fetch(`${TRPC}/${name}${qs}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
-  } else {
-    res = await fetch(`${TRPC}/${name}?batch=1`, {
+  const call = async () => {
+    if (isQuery) {
+      const qs = input ? `?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: input } }))}` : "?batch=1";
+      return fetch(`${TRPC}/${name}${qs}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+    }
+    return fetch(`${TRPC}/${name}?batch=1`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ "0": { json: input ?? null } }),
     });
+  };
+  // retry مقاوم در برابر ۵۰۲/۵۰۳ گذرای isolate سرد ورکر — ۵۰۳ها خوشه‌ای می‌آیند، پس ۶ تلاش با بک‌آف بلند
+  let lastErr;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    try {
+      res = await call();
+      if ((res.status === 502 || res.status === 503) && attempt < 6) { await new Promise(r => setTimeout(r, 4000 * attempt)); continue; }
+      break;
+    } catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 4000 * attempt)); }
   }
+  if (!res) throw lastErr ?? new Error(`${name} → no response`);
   const parts = await res.json().catch(() => null);
   const part = Array.isArray(parts) ? parts[0] : parts;
   if (part?.error) { const err = new Error(part.error.json?.message ?? JSON.stringify(part.error).slice(0, 160)); err.code = part.error.json?.data?.code; throw err; }
@@ -47,9 +58,10 @@ check("فهرست مدارس (مدرسه دمو HS1404)", Array.isArray(list) &&
 // اگر مشتری رمز دمو را عوض کرده باشد، skip حساب می‌شود (ریگرسیون نیست) —
 // سالم‌بودن مسیر ورود با مدرسه throwaway در بند ۵ هم تست می‌شود.
 // ⚠️ آستانه قفل = ۲ تلاش؛ برای هر حساب حداکثر یک‌بار در هر اجرا تلاش می‌شود.
-const roles = { manager: "Manager!123", registrar: "Set!12345", teacher: "Teach!123" };
-// در اجرای ۲۰۲۶-۱۰-۲۲ رمز manager یک‌بار رد شد (مشتری چرخانده)؛ تلاش دوباره = قفل حساب مشتری → این اجرا کلاً skip
-const SKIP_THIS_RUN = (process.env.DEMO_SKIP ?? "manager").split(",").filter(Boolean);
+// ۲۰۲۶-۱۱-۰۸: رمزهای هر ۳ نقش به مقادیر رسمیِ تحویل صاحب اثر بازنشانی شد (Modir$1404 / Tanzim$1404 / Moallem$1404)
+// و با ورود لایو تأیید شد. اگر بعدها رمز چرخانده شد، اسکریپت با skip-هوشمند قفل حساب را فعال نمی‌کند (۱ تلاش در هر حساب).
+const roles = { manager: "Modir$1404", registrar: "Tanzim$1404", teacher: "Moallem$1404" };
+const SKIP_THIS_RUN = (process.env.DEMO_SKIP ?? "").split(",").filter(Boolean);
 const demoUsers = await trpc("superadmin.users", { schoolId: list.find(s => s.code === SCHOOL_CODE).id }, supToken, true);
 for (const [u, p] of Object.entries(roles)) {
   const account = demoUsers.find(x => x.username === u);
@@ -71,20 +83,39 @@ for (const [u, p] of Object.entries(roles)) {
   }
 }
 
+// پاک‌ساز ضد پسماند: هر مدرسه آزمونی که به‌خاطر ۵۰۳ِ پاسخِ گم‌شده جامانده باشد حذف می‌شود
+async function cleanupThrowaway() {
+  try {
+    const list = await trpc("superadmin.schools", null, supToken, true);
+    for (const s of list ?? []) {
+      if (s.code !== SCHOOL_CODE && (s.name.includes("آزمون") || s.name.includes("لانچ") || s.name.includes("دیباگ"))) {
+        await trpc("superadmin.deleteSchool", { id: s.id }, supToken);
+        console.log(`🧹 مدرسه جامانده حذف شد: ${s.code}`);
+      }
+    }
+  } catch { /* بهترین تلاش */ }
+}
+
 // 5. throwaway school: create → user → login → RBAC check → delete (zero residue)
-const stamp = Date.now().toString(36).toUpperCase();
-const tmp = await trpc("superadmin.createSchool", { name: `آزمون لانچ ${stamp}`, months: 1 }, supToken);
-check("ساخت مدرسه از پنل (کد خودکار + اشتراک)", Boolean(tmp?.id && tmp?.code), `code=${tmp?.code}`);
-const tmpUser = await trpc("superadmin.createUser", { schoolId: tmp.id, username: "launchcheck", password: "Launch!123", displayName: "مدیر آزمون لانچ", platformRole: "manager" }, supToken);
-check("ساخت کاربر مدیر", Boolean(tmpUser?.id));
-const tmpLogin = await trpc("auth.login", { schoolCode: tmp.code, username: "launchcheck", password: "Launch!123" });
-check("ورود به مدرسه تازه‌ساخت", Boolean(tmpLogin?.token));
-const del = await trpc("superadmin.deleteSchool", { id: tmp.id }, supToken);
-check("حذف مدرسه آزمون (پاکسازی کامل)", del?.ok !== false);
-// 7. superadmin route protected from school tokens — با توکن مدرسه آزمون (بدون تلاش رمز روی حساب‌های دمو)
-check("کاربر مدرسه به سوپرادمین دسترسی ندارد", await (async () => { try { await trpc("superadmin.schools", null, tmpLogin.token, true); return false; } catch (e) { return e.code === "FORBIDDEN"; } })());
+let tmp = null, tmpUser = null, tmpLogin = null;
+try {
+  const stamp = Date.now().toString(36).toUpperCase();
+  tmp = await trpc("superadmin.createSchool", { name: `آزمون لانچ ${stamp}`, months: 1 }, supToken);
+  check("ساخت مدرسه از پنل (کد خودکار + اشتراک)", Boolean(tmp?.id && tmp?.code), `code=${tmp?.code}`);
+  tmpUser = await trpc("superadmin.createUser", { schoolId: tmp.id, username: "launchcheck", password: "Launch!123", displayName: "مدیر آزمون لانچ", platformRole: "manager" }, supToken);
+  check("ساخت کاربر مدیر", Boolean(tmpUser?.id));
+  tmpLogin = await trpc("auth.login", { schoolCode: tmp.code, username: "launchcheck", password: "Launch!123" });
+  check("ورود به مدرسه تازه‌ساخت", Boolean(tmpLogin?.token));
+  const del = await trpc("superadmin.deleteSchool", { id: tmp.id }, supToken);
+  check("حذف مدرسه آزمون (پاکسازی کامل)", del?.ok !== false);
+  // 7. superadmin route protected from school tokens — با توکن مدرسه آزمون (بدون تلاش رمز روی حساب‌های دمو)
+  check("کاربر مدرسه به سوپرادمین دسترسی ندارد", await (async () => { try { await trpc("superadmin.schools", null, tmpLogin.token, true); return false; } catch (e) { return e.code === "FORBIDDEN"; } })());
+} catch (e) {
+  check(`مسیر ساخت مدرسه آزمون (${e.message.slice(0, 60)})`, false);
+  await cleanupThrowaway();
+}
 const after = await trpc("superadmin.schools", null, supToken, true);
-check("مدرسه آزمون از فهرست حذف شد", !after.some(s => s.code === tmp.code), `count=${after.length}`);
+check("مدرسه آزمون از فهرست حذف شد", !tmp || !after.some(s => s.code === tmp.code), `count=${after.length}`);
 
 // 6. public board
 const pub = await trpc("publicView.classes", null, null, true);

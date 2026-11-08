@@ -13,7 +13,7 @@ import {
   authenticateSchoolUser, computeSchoolRuntime, superOpenId, schoolUserOpenId, isSuperAdmin,
   listSchoolsWithStats, createTenantSchool, updateTenantSchool, deleteTenantSchool,
   listSchoolUsers, createSchoolUser, setUserPassword, toggleUserActive, deleteUserById, superStats,
-  getDefaultPublicSchool, assertTenantOwned, getSchoolUserOwned, countActiveManagers,
+  getDefaultPublicSchool, listPublicSchools, getPublicBranding, assertTenantOwned, getSchoolUserOwned, countActiveManagers,
   listAcademicYears, createAcademicYear, setActiveAcademicYear, deleteAcademicYear,
   listScheduleSlots, setScheduleSlot, promotionPreview, promotionApply,
   listExamsWithStats, listExamsBetween, createExam, updateExam, deleteExam, listExamScores, saveExamScores, getExamById,
@@ -112,13 +112,10 @@ export const appRouter = router({
     classes: publicProcedure.input(z.object({ schoolCode: z.string().optional() }).optional()).query(({ input }) => getPublicClasses(input?.schoolCode)),
     classStudents: publicProcedure.input(z.object({ classId: z.number() })).query(({ input }) => getPublicClassStudents(input.classId)),
     student: publicProcedure.input(z.object({ studentId: z.number() })).query(({ input }) => getPublicStudent(input.studentId)),
-    // وایت‌لیبل تابلوی عمومی (لوگو + رنگ مدرسه پیش‌فرض)
-    branding: publicProcedure.query(async () => {
-      const school = await getDefaultPublicSchool();
-      if (!school) return { schoolName: "", logoData: null, primaryColor: null };
-      const b = await getSchoolBranding(school.id);
-      return { schoolName: school.name, logoData: b.logoData, primaryColor: b.primaryColor };
-    }),
+    // فهرست مدارس فعال برای انتخابگر قابل جستجوی تابلوی عمومی
+    schools: publicProcedure.query(() => listPublicSchools()),
+    // وایت‌لیبل تابلوی عمومی (لوگو + رنگ مدرسه انتخابی؛ بدون کد = پیش‌فرض)
+    branding: publicProcedure.input(z.object({ schoolCode: z.string().optional() }).optional()).query(({ input }) => getPublicBranding(input?.schoolCode)),
     // ورود اولیا: کد مدرسه + کد والد → کارنامه فقط‌خواندنی (بدون احراز هویت)
     parentReport: publicProcedure.input(z.object({ schoolCode: z.string().min(1), parentCode: z.string().min(4).max(24) })).query(({ input }) => getParentReportCard(input.schoolCode, input.parentCode)),
   }),
