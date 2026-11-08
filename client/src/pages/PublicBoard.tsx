@@ -216,7 +216,7 @@ export default function PublicBoard() {
         </div>
         <h1 className="text-2xl sm:text-3xl font-black mt-4">{schoolCode === null ? "…" : schoolName}</h1>
         <p className="text-slate-500 mt-2 text-sm">تابلوی امتیازات کلاس‌ها — برای دیدن فعالیت‌های هر دانش‌آموز، روی نام او بزنید</p>
-        <p className="text-xs text-slate-400 mt-1">به‌روزرسانی: {formatJalali(today)} · <a href={schoolCode ? `/parent?school=${encodeURIComponent(schoolCode)}` : "/parent"} className="underline hover:text-slate-600">ورود اولیا (کارنامه فرزند)</a></p>
+        <p className="text-xs text-slate-400 mt-1">به‌روزرسانی: {formatJalali(today)} · <a href={schoolCode ? `/parent?school=${encodeURIComponent(schoolCode)}` : "/parent"} className="underline hover:text-slate-600">پورتال اولیا و دانش‌آموزان (کارنامه، برنامه هفتگی، تکلیف و نمرات)</a></p>
       </header>
 
       <main className="max-w-4xl mx-auto px-4 sm:px-6 pb-16 space-y-5">

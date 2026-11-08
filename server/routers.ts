@@ -8,7 +8,7 @@ import {
   getDb, upsertUser, getDashboardData, getLoginLockState, registerLoginFailure, resetLoginFailures, getPublicClasses, getPublicClassStudents, getPublicStudent, listReferrals, getReferralReport, deleteReferral, getReferralSettings, setReferralPoints, setReferralLeavePenalty, createClass, createTeam, createStudent, saveAttendance, saveGrade, saveActivity, saveTeamActivity, updateClass, updateTeam, updateStudent, deleteClass, deleteTeam, deleteStudent, createSubject, updateSubject, deleteSubject, consumeStudentPoints, consumeTeamPoints, updateGrade, deleteGrade, updateSchool,
   getNotifyToggles, setNotifyToggles, linkedCountsByClass, subjectNameById,
 } from "./db";
-import { runDetached, notifyExamCreated, notifyScoresSaved, notifyAttendanceRecorded, notifyPointActivity, notifyTeamActivity, notifyGradeRecorded, broadcastFromPanel } from "./notify";
+import { runDetached, notifyExamCreated, notifyScoresSaved, notifyAttendanceRecorded, notifyPointActivity, notifyTeamActivity, notifyGradeRecorded, notifyEventCreated, broadcastFromPanel } from "./notify";
 import {
   authenticateSchoolUser, computeSchoolRuntime, superOpenId, schoolUserOpenId, isSuperAdmin,
   listSchoolsWithStats, createTenantSchool, updateTenantSchool, deleteTenantSchool,
@@ -20,6 +20,7 @@ import {
   listEvents, createEvent, updateEvent, moveEvent, moveExam, deleteEvent,
   getPointsGradeConfig, setPointsGradeConfig, pointsGradePreview, pointsGradeApply,
   getStudentReportCard, ensureParentCode, setParentInfo, getSchoolBranding, setSchoolBranding, getParentReportCard,
+  getPortalIdentity, getPortalSchedule, getPortalUpcoming,
 } from "./db-v2";
 import { revokeTelegramInviteLink, loadTgCfg, testBotToken, saveSchoolBotConfig, registerSchoolWebhook, getSchoolWebhookInfo, disconnectSchoolBot } from "./telegram";
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -118,6 +119,18 @@ export const appRouter = router({
     branding: publicProcedure.input(z.object({ schoolCode: z.string().optional() }).optional()).query(({ input }) => getPublicBranding(input?.schoolCode)),
     // ورود اولیا: کد مدرسه + کد والد → کارنامه فقط‌خواندنی (بدون احراز هویت)
     parentReport: publicProcedure.input(z.object({ schoolCode: z.string().min(1), parentCode: z.string().min(4).max(24) })).query(({ input }) => getParentReportCard(input.schoolCode, input.parentCode)),
+    // ——— پورتال دانش‌آموز/والد (Task 37): هویت + کارنامه + برنامه هفتگی + تکالیف/جلسات + نمرات اخیر ———
+    // کد دسترسی = کد والد یا کد دانش‌آموزی؛ بدون احراز هویت (همان مدل /parent)
+    portal: publicProcedure.input(z.object({ schoolCode: z.string().min(1), accessCode: z.string().min(4).max(24) })).query(async ({ input }) => {
+      const identity = await getPortalIdentity(input.schoolCode, input.accessCode);
+      if (!identity) return null;
+      if (identity.classId == null) return { ...identity, schedule: [], upcoming: { events: [], exams: [], recentGrades: [] } };
+      const [schedule, upcoming] = await Promise.all([
+        getPortalSchedule(identity.schoolId, identity.classId),
+        getPortalUpcoming(identity.schoolId, identity.classId, identity.student.id),
+      ]);
+      return { ...identity, schedule, upcoming };
+    }),
   }),
   // ——— فاز ۴: کارنامه + کد اولیا ———
   reports: router({
@@ -196,11 +209,11 @@ export const appRouter = router({
     }),
     // ——— فاز ۵: اعلان‌های خودکار + پیام‌رسانی ———
     notifSettings: managerOnlyProcedure.query(async ({ ctx }) => {
-      if (ctx.schoolId == null) return { exam: true, score: true, attendance: true, points: true, byClass: [] };
+      if (ctx.schoolId == null) return { exam: true, score: true, attendance: true, points: true, events: true, byClass: [] };
       const [toggles, byClass] = await Promise.all([getNotifyToggles(ctx.schoolId), linkedCountsByClass(ctx.schoolId).catch(() => [])]);
       return { ...toggles, byClass };
     }),
-    setNotifSettings: managerOnlyProcedure.input(z.object({ exam: z.boolean(), score: z.boolean(), attendance: z.boolean(), points: z.boolean() })).mutation(({ ctx, input }) => {
+    setNotifSettings: managerOnlyProcedure.input(z.object({ exam: z.boolean(), score: z.boolean(), attendance: z.boolean(), points: z.boolean(), events: z.boolean().default(true) })).mutation(({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "این عملیات فقط از پنل مدرسه انجام می‌شود" });
       return setNotifyToggles(ctx.schoolId, input);
     }),
@@ -359,7 +372,10 @@ export const appRouter = router({
     list: schoolAnyProcedure.input(z.object({ from: date, to: date })).query(({ ctx, input }) => ctx.schoolId == null ? [] : listEvents(ctx.schoolId, input.from, input.to)),
     create: teacherProcedure.input(z.object({ classId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(180), kind: z.enum(["exam", "homework", "activity", "meeting", "other"]).default("other"), date, note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ثبت رویداد فقط از پنل مدرسه انجام می‌شود" });
-      return createEvent(ctx.schoolId, { ...input, classId: input.classId ?? null });
+      const eventId = await createEvent(ctx.schoolId, { ...input, classId: input.classId ?? null });
+      // Task 37: اعلان تلگرام «تکلیف/جلسه/رویداد جدید» برای دانش‌آموزان متصل کلاس
+      if (eventId) runDetached(notifyEventCreated(ctx.schoolId, { id: eventId, classId: input.classId ?? null, title: input.title, kind: input.kind, date: input.date, note: input.note ?? null }));
+      return eventId;
     }),
     update: teacherProcedure.input(z.object({ id: z.number().int().positive(), classId: z.number().int().positive().nullable().optional(), title: z.string().min(1).max(180), kind: z.enum(["exam", "homework", "activity", "meeting", "other"]), date, note: z.string().max(500).optional() })).mutation(async ({ ctx, input }) => {
       if (ctx.schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "ویرایش رویداد فقط از پنل مدرسه انجام می‌شود" });

@@ -23,8 +23,9 @@ export function MessagingCard({ botConfigured }: { botConfigured: boolean }) {
   const [score, setScore] = useState(true);
   const [attendance, setAttendance] = useState(true);
   const [points, setPoints] = useState(true);
+  const [events, setEvents] = useState(true);
   useEffect(() => {
-    if (notif.data) { setExam(notif.data.exam); setScore(notif.data.score); setAttendance(notif.data.attendance); setPoints(notif.data.points); }
+    if (notif.data) { setExam(notif.data.exam); setScore(notif.data.score); setAttendance(notif.data.attendance); setPoints(notif.data.points); setEvents(notif.data.events ?? true); }
   }, [notif.data]);
 
   const saveToggles = trpc.telegram.setNotifSettings.useMutation({
@@ -53,7 +54,7 @@ export function MessagingCard({ botConfigured }: { botConfigured: boolean }) {
 
   const byClass: ByClass[] = notif.data?.byClass ?? [];
   const totalLinked = byClass.reduce((a, c) => a + c.linked, 0);
-  const togglesDirty = notif.data ? (exam !== notif.data.exam || score !== notif.data.score || attendance !== notif.data.attendance || points !== notif.data.points) : false;
+  const togglesDirty = notif.data ? (exam !== notif.data.exam || score !== notif.data.score || attendance !== notif.data.attendance || points !== notif.data.points || events !== (notif.data.events ?? true)) : false;
 
   return (
     <Card className="border-0 shadow-sm rounded-2xl">
@@ -69,6 +70,7 @@ export function MessagingCard({ botConfigured }: { botConfigured: boolean }) {
             { id: "notif-score", label: "نمره", desc: "ثبت نمره (فرم یا ورود گروهی) → اطلاع به خود دانش‌آموز", v: score, set: setScore },
             { id: "notif-att", label: "غیبت و تأخیر", desc: "ثبت غیبت/تأخیر/موجه → اطلاع فوری به خود دانش‌آموز", v: attendance, set: setAttendance },
             { id: "notif-points", label: "امتیاز", desc: "امتیاز مثبت/منفی و مصرف → اطلاع با مانده کل", v: points, set: setPoints },
+            { id: "notif-events", label: "تکلیف و جلسه", desc: "ثبت تکلیف/جلسه/فعالیت در تقویم → اطلاع به کلاس", v: events, set: setEvents },
           ].map(row => (
             <div key={row.id} className="flex items-start justify-between gap-3 rounded-xl border bg-slate-50/60 p-3">
               <div>
@@ -80,7 +82,7 @@ export function MessagingCard({ botConfigured }: { botConfigured: boolean }) {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <Button onClick={() => saveToggles.mutate({ exam, score, attendance, points })} disabled={saveToggles.isPending || !togglesDirty}>
+          <Button onClick={() => saveToggles.mutate({ exam, score, attendance, points, events })} disabled={saveToggles.isPending || !togglesDirty}>
             {togglesDirty ? "ذخیره تنظیم اعلان‌ها" : "تنظیمات بدون تغییر"}
           </Button>
         </div>

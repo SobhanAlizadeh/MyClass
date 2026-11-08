@@ -44,7 +44,7 @@ export function ParentsBox({ ctx }: { ctx: any }) {
   const copyLink = async () => {
     if (!parentCode) return;
     const url = `${window.location.origin}/parent?school=${encodeURIComponent(ctx.schools?.[0]?.code ?? "")}&code=${parentCode}`;
-    try { await navigator.clipboard.writeText(url); toast.success("لینک کارنامه کپی شد — برای والد بفرستید"); } catch { toast.error("کپی نشد؛ کد: " + parentCode); }
+    try { await navigator.clipboard.writeText(url); toast.success("لینک پورتال کپی شد — برای والد/دانش‌آموز بفرستید"); } catch { toast.error("کپی نشد؛ کد: " + parentCode); }
   };
   const copyCode = async () => {
     if (!parentCode) return;
@@ -54,8 +54,8 @@ export function ParentsBox({ ctx }: { ctx: any }) {
   return (
     <Card className="border-0 shadow-sm rounded-2xl" data-testid="parents-box">
       <CardHeader>
-        <CardTitle className="text-lg flex items-center gap-2"><UserRound className="h-5 w-5 text-[#0f766e]" /> اولیا و دسترسی کارنامه</CardTitle>
-        <p className="text-sm text-slate-500 mt-1">نام و تلفن والد را ثبت کنید؛ سپس کد دسترسی بسازید. والد با «کد مدرسه + کد والد» در صفحه <span dir="ltr" className="font-bold">/parent</span> کارنامه فرزند را فقط‌خواندنی می‌بیند.</p>
+        <CardTitle className="text-lg flex items-center gap-2"><UserRound className="h-5 w-5 text-[#0f766e]" /> اولیا و کد دسترسی پورتال</CardTitle>
+        <p className="text-sm text-slate-500 mt-1">نام و تلفن والد را ثبت کنید؛ سپس کد دسترسی بسازید. والد/دانش‌آموز با «کد مدرسه + کد» در صفحه <span dir="ltr" className="font-bold">/parent</span> کارنامه، برنامه هفتگی، تکلیف‌ها، جلسات و نمرات را فقط‌خواندنی می‌بیند.</p>
       </CardHeader>
       <CardContent className="space-y-4">
         {students.length === 0 ? (
@@ -91,7 +91,7 @@ export function ParentsBox({ ctx }: { ctx: any }) {
                 <span className="text-sm text-amber-900">کد والد:</span>
                 <button onClick={copyCode} className="font-black text-lg tracking-widest text-amber-900 hover:underline" dir="ltr" title="کپی">{parentCode}</button>
                 <Badge variant="outline" className="border-amber-300 text-amber-800">کد مدرسه: <span dir="ltr" className="ml-1">{ctx.schools?.[0]?.code ?? "—"}</span></Badge>
-                <span className="text-xs text-amber-700">این کد + کد مدرسه را برای والد پیامک/پیام‌رسان کنید.</span>
+                <span className="text-xs text-amber-700">این کد + کد مدرسه = ورود به پورتال (کارنامه، برنامه، تکلیف، نمرات).</span>
               </div>
             )}
           </>

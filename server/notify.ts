@@ -20,7 +20,7 @@ import {
   getSchoolTelegram,
   type LinkedStudent,
 } from "./db";
-import { listExamsBetween } from "./db-v2";
+import { listExamsBetween, getPortalSchedule, getSchoolById } from "./db-v2";
 import { formatJalaliLong } from "./jalali";
 
 // پیکربندی بات مدرسه — مستقیم از DB (بدون ایمپورت از telegram.ts تا وابستگی حلقوی نشود)
@@ -60,13 +60,27 @@ async function sendBotMessage(schoolId: number, chatId: number, text: string, re
   }
 }
 
-const MAIN_MENU_KB = {
-  inline_keyboard: [
+const DAY_NAMES = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه"];
+
+// آدرس عمومی سایت (برای دکمه «مشاهده در سایت» بات) — env هنگام اولین درخواست بایند می‌شود
+function siteBaseUrl(): string {
+  return (process.env.PUBLIC_BASE_URL || process.env.WORKER_ORIGIN || "").replace(/\/+$/, "");
+}
+
+// منوی خدمات — با دکمه وب «پورتال سایت» وقتی آدرس عمومی معلوم باشد
+export function menuKb(): { inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>> } {
+  const kb: { inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>> } = { inline_keyboard: [
     [{ text: "🏅 امتیاز من", callback_data: "svc:points" }, { text: "📝 نمرات من", callback_data: "svc:grades" }],
     [{ text: "🗓 امتحان‌های من", callback_data: "svc:exams" }, { text: "✅ حضور من", callback_data: "svc:att" }],
+    [{ text: "📅 برنامه هفتگی", callback_data: "svc:sched" }, { text: "📚 تکلیف و جلسات", callback_data: "svc:events" }],
     [{ text: "🔗 لینک دعوت", callback_data: "svc:link" }, { text: "👨‍👩‍👧 کد والد", callback_data: "svc:parent" }],
-  ],
-};
+  ] };
+  const base = siteBaseUrl();
+  if (base) kb.inline_keyboard.push([{ text: "🌐 مشاهده در سایت (پورتال)", url: `${base}/parent` }]);
+  return kb;
+}
+// سازگاری با استفاده‌های قبلی (telegram.ts) — بدون دکمه وب
+const MAIN_MENU_KB = { inline_keyboard: menuKb().inline_keyboard.filter(row => !row.some(b => b.url)) };
 
 // ارسال موازی با کنترل نرخ (تلگرام ~۳۰ پیام/ثانیه) — دسته‌های ۲۰تایی
 async function sendToMany(schoolId: number, targets: Array<{ chatId: number; text: string }>): Promise<{ sent: number; failed: number }> {
@@ -82,6 +96,26 @@ async function sendToMany(schoolId: number, targets: Array<{ chatId: number; tex
 
 const esc = (s: string) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const fa = (n: number | string) => String(n).replace(/\d/g, d => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]);
+
+// ---------- اعلان رویداد تقویم (تکلیف/جلسه/فعالیت) — Task 37 ----------
+export const eventKindLabels: Record<string, string> = { exam: "امتحان", homework: "تکلیف", activity: "فعالیت", meeting: "جلسه", other: "رویداد" };
+export async function notifyEventCreated(schoolId: number, ev: { id: number; classId: number | null; title: string; kind: string; date: string; note: string | null }): Promise<void> {
+  const toggles = await getNotifyToggles(schoolId).catch(() => null);
+  if (!toggles?.events) return;
+  const kind = eventKindLabels[ev.kind] ?? "رویداد";
+  const icon = ev.kind === "homework" ? "📚" : ev.kind === "meeting" ? "👥" : ev.kind === "activity" ? "🎉" : "🗓";
+  const lines = [
+    `${icon} <b>${kind} جدید در تقویم ثبت شد</b>`,
+    "",
+    `📌 ${esc(ev.title)}`,
+    `📅 تاریخ: ${formatJalaliLong(ev.date)}`,
+    ev.note?.trim() ? `📝 ${esc(ev.note.trim())}` : null,
+    ev.classId == null ? "🏫 این رویداد برای کل مدرسه است" : null,
+  ].filter(Boolean);
+  const linked = await listLinkedStudents(schoolId, ev.classId).catch(() => [] as LinkedStudent[]);
+  if (!linked.length) return;
+  await sendToMany(schoolId, linked.map(s => ({ chatId: s.chatId, text: lines.join("\n") })));
+}
 
 // ---------- اعلان امتحان جدید ----------
 const examTypeLabels: Record<string, string> = { quiz: "کوییز", homework: "تکلیف", practice: "تمرین", midterm: "میان‌ترم", final: "پایان‌ترم" };
@@ -255,6 +289,38 @@ export async function buildUpcomingExamsMessage(schoolId: number, classId: numbe
   return lines.join("\n");
 }
 
+// ---------- برنامه هفتگی و تکالیف/جلسات (Task 37) ----------
+export async function buildScheduleMessage(schoolId: number, classId: number | null): Promise<string> {
+  if (classId == null) return "کلاس شما مشخص نیست؛ از مدیر مدرسه بپرسید.";
+  const slots = await getPortalSchedule(schoolId, classId).catch(() => []);
+  if (!slots.length) return "📅 هنوز برنامه هفتگی برای کلاس شما ثبت نشده است.";
+  const lines = ["📅 <b>برنامه هفتگی کلاس شما</b>", ""];
+  for (let d = 0; d < DAY_NAMES.length; d++) {
+    const daySlots = slots.filter(s => s.dayOfWeek === d);
+    if (!daySlots.length) continue;
+    lines.push(`🗓 <b>${DAY_NAMES[d]}</b>`);
+    for (const s of daySlots) lines.push(`  زنگ ${fa(s.period)}: ${esc(s.subject)}`);
+  }
+  const base = siteBaseUrl();
+  if (base) lines.push("", "🌐 جدول کامل با دکمه «مشاهده در سایت» در پورتال قابل دیدن است.");
+  return lines.join("\n");
+}
+
+export async function buildUpcomingEventsMessage(schoolId: number, classId: number | null): Promise<string> {
+  if (classId == null) return "کلاس شما مشخص نیست؛ از مدیر مدرسه بپرسید.";
+  const { getPortalUpcoming } = await import("./db-v2");
+  const up = await getPortalUpcoming(schoolId, classId, 0).catch(() => null);
+  if (!up) return "خطا در دریافت رویدادها؛ کمی بعد دوباره تلاش کنید.";
+  const events = up.events.filter(e => e.kind !== "exam").slice(0, 12);
+  if (!events.length) return "📚 در ۳۰ روز آینده تکلیف، جلسه یا فعالیت‌ای برای کلاس شما ثبت نشده است.";
+  const lines = ["📚 <b>تکلیف‌ها، جلسات و فعالیت‌های پیش‌رو</b>", ""];
+  for (const e of events) {
+    const icon = e.kind === "homework" ? "📚" : e.kind === "meeting" ? "👥" : e.kind === "activity" ? "🎉" : "📌";
+    lines.push(`${icon} ${formatJalaliLong(e.date)} — <b>${esc(e.title)}</b>${e.scope === "school" ? " (کل مدرسه)" : ""}${e.note?.trim() ? `\n   📝 ${esc(e.note.trim())}` : ""}`);
+  }
+  return lines.join("\n");
+}
+
 export async function buildAttendanceMessage(studentId: number): Promise<string | null> {
   const { studentAttendanceSummary } = await import("./db");
   const a = await studentAttendanceSummary(studentId).catch(() => null);
@@ -275,19 +341,22 @@ export async function buildAttendanceMessage(studentId: number): Promise<string 
 }
 
 export async function buildParentCodeMessage(schoolId: number, studentId: number, firstName: string): Promise<string | null> {
-  const { ensureParentCode } = await import("./db-v2");
+  const { ensureParentCode, getSchoolById } = await import("./db-v2");
   const pc = await ensureParentCode(schoolId, studentId).catch(() => null);
   if (!pc) return null;
-  const base = (process.env.PUBLIC_BASE_URL || process.env.WORKER_ORIGIN || "").replace(/\/+$/, "");
+  const school = await getSchoolById(schoolId).catch(() => null);
+  const base = siteBaseUrl();
+  const portalUrl = base ? `${base}/parent?school=${encodeURIComponent(school?.code ?? "")}&code=${pc.code}` : `(آدرس سایت مدرسه)/parent?school=${school?.code ?? ""}&code=${pc.code}`;
   return [
-    `👨‍👩‍👧 <b>کد دسترسی والد ${esc(firstName)}</b>`,
+    `👨‍👩‍👧 <b>کد دسترسی پورتال ${esc(firstName)}</b>`,
     "",
     `کد: <code>${pc.code}</code>`,
+    `کد مدرسه: <code>${esc(school?.code ?? "?")}</code>`,
     "",
-    "والدین می‌توانند با این کد، کارنامه کامل را در این آدرس ببینند:",
-    base ? `${base}/parent?code=${pc.code}` : `(آدرس سایت مدرسه)/parent?code=${pc.code}`,
+    "با این کدها، کارنامه، برنامه هفتگی، تکلیف‌ها، جلسات و نمرات در پورتال سایت دیده می‌شود:",
+    portalUrl,
     "",
-    "این کد فقط به والدین داده شود.",
+    "این کد فقط به دانش‌آموز و والدین داده شود.",
   ].join("\n");
 }
 
@@ -318,22 +387,32 @@ export async function handleMenuService(cfg: { schoolId: number }, chatId: numbe
   switch (action) {
     case "points": {
       const text = await buildPointsMessage(schoolId, stu.studentId);
-      await sendBotMessage(schoolId, chatId, text ?? "خطا در دریافت امتیاز؛ کمی بعد دوباره تلاش کنید.", MAIN_MENU_KB);
+      await sendBotMessage(schoolId, chatId, text ?? "خطا در دریافت امتیاز؛ کمی بعد دوباره تلاش کنید.", menuKb());
       return true;
     }
     case "grades": {
       const text = await buildGradesMessage(schoolId, stu.studentId);
-      await sendBotMessage(schoolId, chatId, text ?? "خطا در دریافت نمرات؛ کمی بعد دوباره تلاش کنید.", MAIN_MENU_KB);
+      await sendBotMessage(schoolId, chatId, text ?? "خطا در دریافت نمرات؛ کمی بعد دوباره تلاش کنید.", menuKb());
       return true;
     }
     case "exams": {
       const text = await buildUpcomingExamsMessage(schoolId, stu.classId);
-      await sendBotMessage(schoolId, chatId, text, MAIN_MENU_KB);
+      await sendBotMessage(schoolId, chatId, text, menuKb());
       return true;
     }
     case "att": {
       const text = await buildAttendanceMessage(stu.studentId);
-      await sendBotMessage(schoolId, chatId, text ?? "خطا در دریافت حضور و غیاب؛ کمی بعد دوباره تلاش کنید.", MAIN_MENU_KB);
+      await sendBotMessage(schoolId, chatId, text ?? "خطا در دریافت حضور و غیاب؛ کمی بعد دوباره تلاش کنید.", menuKb());
+      return true;
+    }
+    case "sched": {
+      const text = await buildScheduleMessage(schoolId, stu.classId);
+      await sendBotMessage(schoolId, chatId, text, menuKb());
+      return true;
+    }
+    case "events": {
+      const text = await buildUpcomingEventsMessage(schoolId, stu.classId);
+      await sendBotMessage(schoolId, chatId, text, menuKb());
       return true;
     }
     case "link": {
@@ -342,11 +421,11 @@ export async function handleMenuService(cfg: { schoolId: number }, chatId: numbe
     }
     case "parent": {
       const text = await buildParentCodeMessage(schoolId, stu.studentId, stu.firstName);
-      await sendBotMessage(schoolId, chatId, text ?? "خطا در ساخت کد والد؛ کمی بعد دوباره تلاش کنید.", MAIN_MENU_KB);
+      await sendBotMessage(schoolId, chatId, text ?? "خطا در ساخت کد والد؛ کمی بعد دوباره تلاش کنید.", menuKb());
       return true;
     }
     case "home": {
-      await sendBotMessage(schoolId, chatId, mainMenuText(stu), MAIN_MENU_KB);
+      await sendBotMessage(schoolId, chatId, mainMenuText(stu), menuKb());
       return true;
     }
     default:

@@ -346,7 +346,7 @@ export type SchoolTelegramConfig = { botToken: string | null; channelId: string 
 let _schoolSettingsReady: Promise<unknown> | null = null;
 function ensureSchoolSettingsTable(conn: ReturnType<typeof connect>) {
   if (!_schoolSettingsReady) _schoolSettingsReady = (async () => {
-    await conn.execute("CREATE TABLE IF NOT EXISTS school_settings (school_id INT PRIMARY KEY, bot_token TEXT NULL, channel_id VARCHAR(128) NULL, webhook_secret VARCHAR(64) NULL, bot_username VARCHAR(64) NULL, webhook_url VARCHAR(255) NULL, referral_points DECIMAL(10,2) NULL, referral_leave_penalty TINYINT NULL, notif_exam TINYINT NOT NULL DEFAULT 1, notif_score TINYINT NOT NULL DEFAULT 1, notif_attendance TINYINT NOT NULL DEFAULT 1, notif_points TINYINT NOT NULL DEFAULT 1, updated_at BIGINT NOT NULL DEFAULT 0)");
+    await conn.execute("CREATE TABLE IF NOT EXISTS school_settings (school_id INT PRIMARY KEY, bot_token TEXT NULL, channel_id VARCHAR(128) NULL, webhook_secret VARCHAR(64) NULL, bot_username VARCHAR(64) NULL, webhook_url VARCHAR(255) NULL, referral_points DECIMAL(10,2) NULL, referral_leave_penalty TINYINT NULL, notif_exam TINYINT NOT NULL DEFAULT 1, notif_score TINYINT NOT NULL DEFAULT 1, notif_attendance TINYINT NOT NULL DEFAULT 1, notif_points TINYINT NOT NULL DEFAULT 1, notif_events TINYINT NOT NULL DEFAULT 1, updated_at BIGINT NOT NULL DEFAULT 0)");
     // مهاجرت تنجل برای جدول‌های ساخته‌شده در نسخه‌های میانی
     await conn.execute("ALTER TABLE school_settings ADD COLUMN bot_username VARCHAR(64) NULL").catch(() => {});
     await conn.execute("ALTER TABLE school_settings ADD COLUMN webhook_url VARCHAR(255) NULL").catch(() => {});
@@ -354,6 +354,7 @@ function ensureSchoolSettingsTable(conn: ReturnType<typeof connect>) {
     await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_score TINYINT NOT NULL DEFAULT 1").catch(() => {});
     await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_attendance TINYINT NOT NULL DEFAULT 1").catch(() => {});
     await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_points TINYINT NOT NULL DEFAULT 1").catch(() => {});
+    await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_events TINYINT NOT NULL DEFAULT 1").catch(() => {});
   })().catch(e => { _schoolSettingsReady = null; throw e; });
   return _schoolSettingsReady;
 }
@@ -407,27 +408,28 @@ export async function findSchoolIdByBotToken(token: string, exceptSchoolId?: num
 }
 
 // ——— فاز ۵: اعلان‌های خودکار بات (تگل‌های per-school) ———
-export type NotifyToggles = { exam: boolean; score: boolean; attendance: boolean; points: boolean };
+export type NotifyToggles = { exam: boolean; score: boolean; attendance: boolean; points: boolean; events: boolean };
 export async function getNotifyToggles(schoolId: number): Promise<NotifyToggles> {
   const conn = getRawConn();
-  if (!conn) return { exam: true, score: true, attendance: true, points: true };
+  if (!conn) return { exam: true, score: true, attendance: true, points: true, events: true };
   await ensureSchoolSettingsTable(conn);
-  const res: any = await conn.execute("SELECT notif_exam, notif_score, notif_attendance, notif_points FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]);
+  const res: any = await conn.execute("SELECT notif_exam, notif_score, notif_attendance, notif_points, notif_events FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]);
   const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
   return {
     exam: row ? Number(row.notif_exam ?? 1) === 1 : true,
     score: row ? Number(row.notif_score ?? 1) === 1 : true,
     attendance: row ? Number(row.notif_attendance ?? 1) === 1 : true,
     points: row ? Number(row.notif_points ?? 1) === 1 : true,
+    events: row && row.notif_events != null ? Number(row.notif_events) === 1 : true,
   };
 }
 export async function setNotifyToggles(schoolId: number, t: Partial<NotifyToggles>): Promise<NotifyToggles> {
   const conn = getRawConn();
-  if (!conn) return { exam: true, score: true, attendance: true, points: true };
+  if (!conn) return { exam: true, score: true, attendance: true, points: true, events: true };
   await ensureSchoolSettingsTable(conn);
   await conn.execute(
-    "INSERT INTO school_settings (school_id, notif_exam, notif_score, notif_attendance, notif_points, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE notif_exam = VALUES(notif_exam), notif_score = VALUES(notif_score), notif_attendance = VALUES(notif_attendance), notif_points = VALUES(notif_points), updated_at = VALUES(updated_at)",
-    [schoolId, t.exam === false ? 0 : 1, t.score === false ? 0 : 1, t.attendance === false ? 0 : 1, t.points === false ? 0 : 1, Date.now()]
+    "INSERT INTO school_settings (school_id, notif_exam, notif_score, notif_attendance, notif_points, notif_events, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE notif_exam = VALUES(notif_exam), notif_score = VALUES(notif_score), notif_attendance = VALUES(notif_attendance), notif_points = VALUES(notif_points), notif_events = VALUES(notif_events), updated_at = VALUES(updated_at)",
+    [schoolId, t.exam === false ? 0 : 1, t.score === false ? 0 : 1, t.attendance === false ? 0 : 1, t.points === false ? 0 : 1, t.events === false ? 0 : 1, Date.now()]
   );
   return getNotifyToggles(schoolId);
 }

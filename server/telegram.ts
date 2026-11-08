@@ -43,7 +43,7 @@ import {
   clearSchoolTelegram,
   findSchoolIdByBotToken,
 } from "./db";
-import { handleMenuService, mainMenuText, MAIN_MENU_KB } from "./notify";
+import { handleMenuService, mainMenuText, menuKb } from "./notify";
 
 // ---------- config ----------
 const CHANNEL_FALLBACK = "@takrahtop";
@@ -242,8 +242,8 @@ async function sendReferralLink(cfg: TgCfg, chatId: number, studentId: number, t
   } else {
     lines.push("✅ حساب شما وصل شد؛ ولی ساخت لینک اختصاصی ممکن نشد.", `دلیل فنی: بات ادمین کانال با مجوز «Invite Users via Link» نیست.`, "");
   }
-  lines.push("🎁 از منوی زیر می‌توانید امتیاز، نمرات، امتحان‌ها و حضور خود را ببینید:");
-  await sendMessage(cfg, chatId, lines.join("\n"), MAIN_MENU_KB);
+  lines.push("🎁 از منوی زیر می‌توانید امتیاز، نمرات، برنامه هفتگی، تکلیف‌ها، امتحان‌ها و حضور خود را ببینید:");
+  await sendMessage(cfg, chatId, lines.join("\n"), menuKb());
   // این اکانت حالا لینک دارد — دیگر پیام معرفی افیلیت برایش نمی‌رود
   if (Number(tgUser?.id) > 0) await markTelegramPrompt(Number(tgUser.id), "has_link", chatId, null).catch(() => {});
 }
@@ -277,10 +277,10 @@ async function handleMessage(cfg: TgCfg, msg: any): Promise<void> {
   }
   if (chatType !== "private") return;
 
-  // فاز ۵: دستورهای خدمات — فقط برای اکانت‌های متصل (svc منو)
-  const svcCommand = text.match(/^\/(points|grades|exams|attendance|parent|menu|help)\b/);
+  // فاز ۵ + Task 37: دستورهای خدمات — فقط برای اکانت‌های متصل (svc منو)
+  const svcCommand = text.match(/^\/(points|grades|exams|attendance|parent|menu|help|schedule|sched|homework|events)\b/);
   if (svcCommand) {
-    const map: Record<string, string> = { points: "points", grades: "grades", exams: "exams", attendance: "att", parent: "parent", menu: "home", help: "home" };
+    const map: Record<string, string> = { points: "points", grades: "grades", exams: "exams", attendance: "att", parent: "parent", menu: "home", help: "home", schedule: "sched", sched: "sched", homework: "events", events: "events" };
     await handleMenuService({ schoolId: cfg.schoolId ?? 0 }, chatId, from.id, map[svcCommand[1]]);
     return;
   }
@@ -298,7 +298,7 @@ async function handleMessage(cfg: TgCfg, msg: any): Promise<void> {
         `هر عضو از طریق این لینک = ${pts} امتیاز برای شما. کد شما: ${existing.code}`,
         "",
         "🎁 منوی خدمات:",
-      ].join("\n"), MAIN_MENU_KB);
+      ].join("\n"), menuKb());
       return;
     }
     // فاز ۵: اگر حساب وصل است ولی لینک ندارد (کانال تنظیم نشده) → منو

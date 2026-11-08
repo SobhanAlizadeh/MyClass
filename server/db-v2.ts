@@ -1013,3 +1013,117 @@ export async function getParentReportCard(schoolCode: string, parentCode: string
   return { schoolName: school.name, branding, card };
 }
 
+
+// --- پورتال دانش‌آموز و والد (Task 37) -------------------------------------------
+// ورود با «کد مدرسه + کد دسترسی»؛ کد دسترسی می‌تواند «کد والد» یا «کد دانش‌آموزی» باشد.
+// خروجی: هویت دانش‌آموز + کارنامه کامل (همان getParentReportCard) برای نمایش تب‌دار.
+export type PortalIdentity = {
+  schoolId: number;
+  schoolName: string;
+  schoolCode: string;
+  branding: SchoolBranding;
+  accessType: "parent" | "student";
+  classId: number | null;
+  student: { id: number; firstName: string; lastName: string; className: string | null; teamName: string | null; totalPoints: number };
+  card: StudentReportCard;
+};
+
+export async function getPortalIdentity(schoolCode: string, accessCode: string): Promise<PortalIdentity | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const code = accessCode.trim().toUpperCase();
+  const sc = schoolCode.trim().toUpperCase();
+  if (!code || !sc) return null;
+  const schoolRows = await db.select({ id: schools.id, name: schools.name, code: schools.code, status: schools.status, subscriptionEnd: schools.subscriptionEnd }).from(schools).where(eq(schools.code, sc)).limit(1);
+  const school = schoolRows[0];
+  if (!school || school.status !== "active") return null;
+  const runtime = computeSchoolRuntime(school as School);
+  if (!runtime.ok) return null;
+  // اول کد والد، بعد کد دانش‌آموزی (هر دو یکتا در سطح جدول)
+  let stRows = await db.select({ id: students.id }).from(students).where(and(eq(students.schoolId, school.id), eq(students.parentCode, code))).limit(1);
+  let accessType: "parent" | "student" = "parent";
+  if (!stRows.length) {
+    stRows = await db.select({ id: students.id }).from(students).where(and(eq(students.schoolId, school.id), eq(students.studentCode, code))).limit(1);
+    accessType = "student";
+  }
+  if (!stRows.length) return null;
+  const studentId = stRows[0].id;
+  const [card, stuClsRows, branding] = await Promise.all([
+    getStudentReportCard(school.id, studentId),
+    db.select({ id: classes.id }).from(students).innerJoin(classes, eq(classes.id, students.classId)).where(eq(students.id, studentId)).limit(1),
+    getSchoolBranding(school.id),
+  ]);
+  const cls = stuClsRows[0];
+  const teamName = card.teamName ?? null;
+  return {
+    schoolId: school.id,
+    schoolName: school.name,
+    schoolCode: school.code ?? "",
+    branding,
+    accessType,
+    classId: cls?.id ?? null,
+    student: {
+      id: card.student.id,
+      firstName: card.student.firstName,
+      lastName: card.student.lastName,
+      className: card.className ?? null,
+      teamName,
+      totalPoints: card.points.total,
+    },
+    card,
+  };
+}
+
+// برنامه هفتگی کلاسِ دانش‌آموز (روز × زنگ → نام درس) — برای تب «برنامه هفتگی» پورتال و منوی بات
+export async function getPortalSchedule(schoolId: number, classId: number): Promise<Array<{ dayOfWeek: number; period: number; subject: string }>> {
+  const db = await getDb();
+  if (!db) return [];
+  const slots = await db.select({ dayOfWeek: scheduleSlots.dayOfWeek, period: scheduleSlots.period, subjectId: scheduleSlots.subjectId })
+    .from(scheduleSlots).where(and(eq(scheduleSlots.schoolId, schoolId), eq(scheduleSlots.classId, classId)));
+  if (!slots.length) return [];
+  const subIds = Array.from(new Set(slots.map(s => s.subjectId).filter((v): v is number => v != null)));
+  const subRows = subIds.length
+    ? await db.select({ id: subjects.id, name: subjects.name }).from(subjects).where(and(eq(subjects.schoolId, schoolId), sql`${subjects.id} IN (${sql.join(subIds.map(id => sql`${id}`), sql`, `)})`))
+    : [];
+  const nameOf = (id: number | null) => (id == null ? "—" : subRows.find(s => s.id === id)?.name ?? "—");
+  return slots
+    .map(s => ({ dayOfWeek: s.dayOfWeek, period: s.period, subject: nameOf(s.subjectId) }))
+    .sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.period - b.period);
+}
+
+// رویدادهای پیش‌رو کلاس/مدرسه + امتحان‌های ۳۰ روز آینده + آخرین نمره‌های عنوان‌دار
+export type PortalUpcoming = {
+  events: Array<{ id: number; kind: string; title: string; date: string; note: string | null; scope: "class" | "school" }>;
+  exams: Array<{ id: number; title: string; subject: string | null; examType: string; date: string; maxScore: number }>;
+  recentGrades: Array<{ title: string; subject: string | null; score: number; maxScore: number; date: string }>;
+};
+
+export async function getPortalUpcoming(schoolId: number, classId: number, studentId: number): Promise<PortalUpcoming> {
+  const db = await getDb();
+  if (!db) return { events: [], exams: [], recentGrades: [] };
+  const today = new Date().toISOString().slice(0, 10);
+  const in30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  // رویدادها: مال کلاس خودش یا سراسری (classId تهی) — امتحان‌ها بخش جدا دارند ولی kind=exam را هم نشان می‌دهیم
+  const evRows = await listEvents(schoolId, today, in30);
+  const myEvents = evRows.filter(e => e.classId == null || e.classId === classId).slice(0, 40);
+  const examRows = await listExamsBetween(schoolId, today, in30);
+  const myExams = examRows.filter(e => e.classId === classId).slice(0, 20);
+  const subIds = Array.from(new Set(myExams.map(e => e.subjectId).filter((v): v is number => v != null)));
+  const subRows = subIds.length
+    ? await db.select({ id: subjects.id, name: subjects.name }).from(subjects).where(and(eq(subjects.schoolId, schoolId), sql`${subjects.id} IN (${sql.join(subIds.map(id => sql`${id}`), sql`, `)})`))
+    : [];
+  const gradeRows = await db.select({ title: grades.title, subjectId: grades.subjectId, score: grades.score, maxScore: grades.maxScore, date: grades.date })
+    .from(grades).where(and(eq(grades.studentId, studentId), eq(grades.schoolId, schoolId)))
+    .orderBy(desc(grades.date), desc(grades.id)).limit(12);
+  const gradeSubIds = Array.from(new Set(gradeRows.map(g => g.subjectId).filter((v): v is number => v != null && !subIds.includes(v))));
+  const gradeSubRows = gradeSubIds.length
+    ? await db.select({ id: subjects.id, name: subjects.name }).from(subjects).where(and(eq(subjects.schoolId, schoolId), sql`${subjects.id} IN (${sql.join(gradeSubIds.map(id => sql`${id}`), sql`, `)})`))
+    : [];
+  const allSubs = [...subRows, ...gradeSubRows];
+  const subName = (id: number | null) => (id == null ? null : allSubs.find(s => s.id === id)?.name ?? null);
+  return {
+    events: myEvents.map(e => ({ id: e.id, kind: e.kind, title: e.title, date: e.date, note: e.note, scope: e.classId == null ? "school" as const : "class" as const })),
+    exams: myExams.map(e => ({ id: e.id, title: e.title, subject: subName(e.subjectId), examType: e.examType, date: e.date, maxScore: e.maxScore })),
+    recentGrades: gradeRows.map(g => ({ title: g.title, subject: subName(g.subjectId), score: Math.round(Number(g.score) * 100) / 100, maxScore: Number(g.maxScore) || 20, date: g.date })),
+  };
+}
