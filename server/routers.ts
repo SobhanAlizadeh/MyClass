@@ -169,16 +169,17 @@ export const appRouter = router({
       return { success: true as const, revoked, code: info.code };
     }),
   }),
-  // اتصال بات تلگرام مدرسه — فقط مدیر؛ توکن per-school در school_settings ذخیره می‌شود
+  // اتصال بات مدرسه (تلگرام یا بله) — فقط مدیر؛ توکن per-school در school_settings ذخیره می‌شود
   // و وب‌هوک بات به همین سرور (با سکرت اختصاصی مدرسه) ثبت می‌گردد.
   telegram: router({
     info: managerOnlyProcedure.query(async ({ ctx }) => {
       const schoolId = ctx.schoolId;
       // سوپرادمین ناظر (بدون مدرسه): اتصالی برای نمایش نیست
-      if (schoolId == null) return { configured: false, botUsername: null, channelId: null, tokenTail: null, updatedAt: null, webhook: null, observer: true };
+      if (schoolId == null) return { configured: false, botUsername: null, channelId: null, tokenTail: null, updatedAt: null, webhook: null, messenger: "telegram" as const, observer: true };
       const cfg = await loadTgCfg(schoolId);
       const row = cfg.token ? await import("./db").then(m => m.getSchoolTelegram(schoolId)) : null;
       const tokenTail = row?.botToken ? row.botToken.slice(-6) : null;
+      const messenger = row?.messenger ?? "telegram";
       const webhook = cfg.token ? await getSchoolWebhookInfo(schoolId).catch(() => null) : null;
       return {
         configured: Boolean(cfg.token && cfg.channelId),
@@ -186,14 +187,15 @@ export const appRouter = router({
         channelId: row?.channelId ?? null,
         tokenTail,
         updatedAt: row?.updatedAt ?? null,
+        messenger,
         webhook: webhook ? { url: webhook.url ?? null, pendingUpdateCount: Number(webhook.pending_update_count ?? 0), lastErrorMessage: webhook.last_error_message ?? null, lastErrorDate: webhook.last_error_date ?? null } : null,
       };
     }),
-    test: managerOnlyProcedure.input(z.object({ botToken: z.string().min(10) })).mutation(async ({ input }) => testBotToken(input.botToken)),
-    save: managerOnlyProcedure.input(z.object({ botToken: z.string().min(10), channelId: z.string().min(1), registerWebhook: z.boolean().default(true) })).mutation(async ({ ctx, input }) => {
+    test: managerOnlyProcedure.input(z.object({ botToken: z.string().min(10), messenger: z.enum(["telegram", "bale"]).default("telegram") })).mutation(async ({ input }) => testBotToken(input.botToken, input.messenger)),
+    save: managerOnlyProcedure.input(z.object({ botToken: z.string().min(10), channelId: z.string().min(1), registerWebhook: z.boolean().default(true), messenger: z.enum(["telegram", "bale"]).default("telegram") })).mutation(async ({ ctx, input }) => {
       const schoolId = ctx.schoolId;
-      if (schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "اتصال بات تلگرام فقط از پنل مدرسه توسط مدیر مدرسه انجام می‌شود" });
-      const saved = await saveSchoolBotConfig(schoolId, input.botToken, input.channelId);
+      if (schoolId == null) throw new TRPCError({ code: "FORBIDDEN", message: "اتصال بات فقط از پنل مدرسه توسط مدیر مدرسه انجام می‌شود" });
+      const saved = await saveSchoolBotConfig(schoolId, input.botToken, input.channelId, input.messenger);
       if (!saved.ok) return saved;
       let webhook: { ok: boolean; url?: string; error?: string } | null = null;
       if (input.registerWebhook) webhook = await registerSchoolWebhook(schoolId);

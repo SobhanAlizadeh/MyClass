@@ -342,14 +342,19 @@ export type ReferralSettings = { points: number; pointsIsDefault: boolean; leave
 // --- تنظیمات per-school (نسخه ۲ چندمدرسه‌ای) ---------------------------------
 // هر مدرسه توکن بات/کانال تلگرام و امتیاز دعوتِ خودش را دارد؛ قبل از نسخه ۲ همه‌چیز
 // env یا app_settings سراسری بود که برای SaaS درست نیست. جدول به‌صورت تنبل ساخته می‌شود.
-export type SchoolTelegramConfig = { botToken: string | null; channelId: string | null; webhookSecret: string | null; botUsername: string | null; webhookUrl: string | null; updatedAt: number | null };
+export type MessengerProvider = "telegram" | "bale";
+export function normalizeMessenger(v: unknown): MessengerProvider { return String(v ?? "").toLowerCase() === "bale" ? "bale" : "telegram"; }
+export type SchoolTelegramConfig = { botToken: string | null; channelId: string | null; webhookSecret: string | null; botUsername: string | null; webhookUrl: string | null; messenger: MessengerProvider; updatedAt: number | null };
 let _schoolSettingsReady: Promise<unknown> | null = null;
 function ensureSchoolSettingsTable(conn: ReturnType<typeof connect>) {
   if (!_schoolSettingsReady) _schoolSettingsReady = (async () => {
-    await conn.execute("CREATE TABLE IF NOT EXISTS school_settings (school_id INT PRIMARY KEY, bot_token TEXT NULL, channel_id VARCHAR(128) NULL, webhook_secret VARCHAR(64) NULL, bot_username VARCHAR(64) NULL, webhook_url VARCHAR(255) NULL, referral_points DECIMAL(10,2) NULL, referral_leave_penalty TINYINT NULL, notif_exam TINYINT NOT NULL DEFAULT 1, notif_score TINYINT NOT NULL DEFAULT 1, notif_attendance TINYINT NOT NULL DEFAULT 1, notif_points TINYINT NOT NULL DEFAULT 1, notif_events TINYINT NOT NULL DEFAULT 1, updated_at BIGINT NOT NULL DEFAULT 0)");
+    await conn.execute("CREATE TABLE IF NOT EXISTS school_settings (school_id INT PRIMARY KEY, bot_token TEXT NULL, channel_id VARCHAR(128) NULL, webhook_secret VARCHAR(64) NULL, bot_username VARCHAR(64) NULL, webhook_url VARCHAR(255) NULL, messenger VARCHAR(16) NULL DEFAULT 'telegram', referral_points DECIMAL(10,2) NULL, referral_leave_penalty TINYINT NULL, notif_exam TINYINT NOT NULL DEFAULT 1, notif_score TINYINT NOT NULL DEFAULT 1, notif_attendance TINYINT NOT NULL DEFAULT 1, notif_points TINYINT NOT NULL DEFAULT 1, notif_events TINYINT NOT NULL DEFAULT 1, updated_at BIGINT NOT NULL DEFAULT 0)");
     // مهاجرت تنجل برای جدول‌های ساخته‌شده در نسخه‌های میانی
     await conn.execute("ALTER TABLE school_settings ADD COLUMN bot_username VARCHAR(64) NULL").catch(() => {});
     await conn.execute("ALTER TABLE school_settings ADD COLUMN webhook_url VARCHAR(255) NULL").catch(() => {});
+    await conn.execute("ALTER TABLE school_settings ADD COLUMN messenger VARCHAR(16) NULL DEFAULT 'telegram'").catch(() => {});
+    // نسخه‌های اول Task 38 ستون را NOT NULL ساخته بودند — COALESCE(VALUES(messenger), …) به NULL نیاز دارد
+    await conn.execute("ALTER TABLE school_settings MODIFY COLUMN messenger VARCHAR(16) NULL DEFAULT 'telegram'").catch(() => {});
     await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_exam TINYINT NOT NULL DEFAULT 1").catch(() => {});
     await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_score TINYINT NOT NULL DEFAULT 1").catch(() => {});
     await conn.execute("ALTER TABLE school_settings ADD COLUMN notif_attendance TINYINT NOT NULL DEFAULT 1").catch(() => {});
@@ -363,7 +368,7 @@ export async function getSchoolTelegram(schoolId: number): Promise<SchoolTelegra
   const conn = getRawConn();
   if (!conn) return null;
   await ensureSchoolSettingsTable(conn);
-  const res: any = await conn.execute("SELECT bot_token, channel_id, webhook_secret, bot_username, webhook_url, updated_at FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]);
+  const res: any = await conn.execute("SELECT bot_token, channel_id, webhook_secret, bot_username, webhook_url, messenger, updated_at FROM school_settings WHERE school_id = ? LIMIT 1", [schoolId]);
   const row: any = (Array.isArray(res) ? res : res.rows)?.[0];
   if (!row) return null;
   return {
@@ -372,27 +377,29 @@ export async function getSchoolTelegram(schoolId: number): Promise<SchoolTelegra
     webhookSecret: row.webhook_secret != null ? String(row.webhook_secret) : null,
     botUsername: row.bot_username != null ? String(row.bot_username) : null,
     webhookUrl: row.webhook_url != null ? String(row.webhook_url) : null,
+    messenger: normalizeMessenger(row.messenger),
     updatedAt: Number(row.updated_at ?? 0) || null,
   };
 }
 
-// ذخیره پیکربندی تلگرام مدرسه — فیلدهای ارسال‌نشده حفظ می‌شوند (webhook_secret فقط اگر جدید باشد عوض می‌شود)
-export async function setSchoolTelegram(schoolId: number, cfg: { botToken?: string | null; channelId?: string | null; botUsername?: string | null; webhookSecret?: string | null; webhookUrl?: string | null }): Promise<void> {
+// ذخیره پیکربندی پیام‌رسان مدرسه (تلگرام/بله) — فیلدهای ارسال‌نشده حفظ می‌شوند
+// (COALESCE — قبلاً ثبت وب‌هوک که فقط webhookSecret/Url می‌فرستاد، توکن و کانال را پاک می‌کرد!)
+export async function setSchoolTelegram(schoolId: number, cfg: { botToken?: string | null; channelId?: string | null; botUsername?: string | null; webhookSecret?: string | null; webhookUrl?: string | null; messenger?: MessengerProvider | null }): Promise<void> {
   const conn = getRawConn();
   if (!conn) throw new Error("Database unavailable");
   await ensureSchoolSettingsTable(conn);
   await conn.execute(
-    "INSERT INTO school_settings (school_id, bot_token, channel_id, bot_username, webhook_secret, webhook_url, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE bot_token = VALUES(bot_token), channel_id = VALUES(channel_id), bot_username = VALUES(bot_username), webhook_secret = COALESCE(VALUES(webhook_secret), webhook_secret), webhook_url = COALESCE(VALUES(webhook_url), webhook_url), updated_at = VALUES(updated_at)",
-    [schoolId, cfg.botToken ?? null, cfg.channelId ?? null, cfg.botUsername ?? null, cfg.webhookSecret ?? null, cfg.webhookUrl ?? null, Date.now()]
+    "INSERT INTO school_settings (school_id, bot_token, channel_id, bot_username, webhook_secret, webhook_url, messenger, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE bot_token = COALESCE(VALUES(bot_token), bot_token), channel_id = COALESCE(VALUES(channel_id), channel_id), bot_username = COALESCE(VALUES(bot_username), bot_username), webhook_secret = COALESCE(VALUES(webhook_secret), webhook_secret), webhook_url = COALESCE(VALUES(webhook_url), webhook_url), messenger = COALESCE(VALUES(messenger), messenger), updated_at = VALUES(updated_at)",
+    [schoolId, cfg.botToken ?? null, cfg.channelId ?? null, cfg.botUsername ?? null, cfg.webhookSecret ?? null, cfg.webhookUrl ?? null, cfg.messenger ?? null, Date.now()]
   );
 }
 
-// قطع اتصال تلگرام مدرسه — توکن/کانال پاک می‌شود؛ webhook_secret برای ابطال وب‌هوک لازم است
+// قطع اتصال بات مدرسه — توکن/کانال پاک و پیام‌رسان به تلگرام برمی‌گردد
 export async function clearSchoolTelegram(schoolId: number): Promise<void> {
   const conn = getRawConn();
   if (!conn) throw new Error("Database unavailable");
   await ensureSchoolSettingsTable(conn);
-  await conn.execute("UPDATE school_settings SET bot_token = NULL, channel_id = NULL, bot_username = NULL, webhook_url = NULL, updated_at = ? WHERE school_id = ?", [Date.now(), schoolId]);
+  await conn.execute("UPDATE school_settings SET bot_token = NULL, channel_id = NULL, bot_username = NULL, webhook_url = NULL, messenger = 'telegram', updated_at = ? WHERE school_id = ?", [Date.now(), schoolId]);
 }
 
 // آیا این توکن بات قبلاً برای مدرسه دیگری ثبت شده؟ (جلوگیری از تصاحب وب‌هوک بین مدارس)

@@ -42,14 +42,16 @@ import {
   setSchoolTelegram,
   clearSchoolTelegram,
   findSchoolIdByBotToken,
+  type MessengerProvider,
 } from "./db";
 import { handleMenuService, mainMenuText, menuKb } from "./notify";
 
 // ---------- config ----------
 const CHANNEL_FALLBACK = "@takrahtop";
 
-// پیکربندی مؤثر تلگرام یک مدرسه (یا مسیر قدیمی env برای تک‌مدرسه‌ای)
-export type TgCfg = { schoolId: number | null; token: string; channelId: string; webhookSecret: string };
+// پیکربندی مؤثر پیام‌رسان یک مدرسه (یا مسیر قدیمی env برای تک‌مدرسه‌ای)
+// Task 38: دو پیام‌رسان پشتیبانی می‌شود — تلگرام (api.telegram.org) و بله (tapi.bale.ai)
+export type TgCfg = { schoolId: number | null; token: string; channelId: string; webhookSecret: string; provider: MessengerProvider };
 
 function envCfg(): TgCfg {
   return {
@@ -57,7 +59,13 @@ function envCfg(): TgCfg {
     token: process.env.TELEGRAM_BOT_TOKEN ?? "",
     channelId: process.env.TELEGRAM_CHANNEL_ID?.trim() || CHANNEL_FALLBACK,
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
+    provider: "telegram",
   };
+}
+
+// پایه API بات هر پیام‌رسان — بله از API هم‌ساختار تلگرام روی tapi.bale.ai استفاده می‌کند
+export function messengerApiBase(provider: MessengerProvider): string {
+  return provider === "bale" ? "https://tapi.bale.ai" : "https://api.telegram.org";
 }
 
 // پیکربندی مدرسه از DB — اگر مدرسه تنظیم نکرده باشد، توکن خالی برمی‌گردد
@@ -66,10 +74,10 @@ export async function loadTgCfg(schoolId: number | null): Promise<TgCfg> {
   if (schoolId == null) return envCfg();
   try {
     const row = await getSchoolTelegram(schoolId);
-    if (!row?.botToken) return { schoolId, token: "", channelId: "", webhookSecret: row?.webhookSecret ?? "" };
-    return { schoolId, token: row.botToken, channelId: row.channelId?.trim() || "", webhookSecret: row.webhookSecret ?? "" };
+    if (!row?.botToken) return { schoolId, token: "", channelId: "", webhookSecret: row?.webhookSecret ?? "", provider: row?.messenger ?? "telegram" };
+    return { schoolId, token: row.botToken, channelId: row.channelId?.trim() || "", webhookSecret: row.webhookSecret ?? "", provider: row.messenger ?? "telegram" };
   } catch {
-    return { schoolId, token: "", channelId: "", webhookSecret: "" };
+    return { schoolId, token: "", channelId: "", webhookSecret: "", provider: "telegram" };
   }
 }
 
@@ -84,16 +92,16 @@ async function referralPoints(schoolId: number | null): Promise<number> {
   catch { const n = Number(process.env.TELEGRAM_REFERRAL_POINTS ?? REFERRAL_POINTS); return Number.isFinite(n) && n > 0 ? Math.max(0.1, Math.round(n * 100) / 100) : REFERRAL_POINTS; }
 }
 
-// ---------- Telegram API ----------
+// ---------- Bot API (تلگرام/بله — هم‌ساختار) ----------
 async function tg(cfg: TgCfg, method: string, body: unknown): Promise<any> {
-  if (!cfg.token) return { ok: false, error_code: 501, description: "بات تلگرام برای این مدرسه تنظیم نشده است" };
+  if (!cfg.token) return { ok: false, error_code: 501, description: "بات برای این مدرسه تنظیم نشده است" };
   try {
-    const res = await fetch(`https://api.telegram.org/bot${cfg.token}/${method}`, {
+    const res = await fetch(`${messengerApiBase(cfg.provider)}/bot${cfg.token}/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    return await res.json().catch(() => ({ ok: false, description: "invalid JSON from Telegram" }));
+    return await res.json().catch(() => ({ ok: false, description: "invalid JSON from bot API" }));
   } catch (e: any) {
     return { ok: false, description: String(e?.message ?? e) };
   }
@@ -129,10 +137,11 @@ function displayName(u: any): string {
 // به کسانی که هنوز استارت نکرده‌اند، به‌محض اولین /start یا پیام دوباره تلاش می‌شود.
 let _botUsernameCache = new Map<string, string>();
 async function botUsername(cfg: TgCfg): Promise<string> {
-  const cached = _botUsernameCache.get(cfg.token);
+  const cacheKey = `${cfg.provider}:${cfg.token}`;
+  const cached = _botUsernameCache.get(cacheKey);
   if (cached) return cached;
-  try { const me = await tg(cfg, "getMe", {}); if (me?.ok && me.result?.username) { const u = `@${me.result.username}`; _botUsernameCache.set(cfg.token, u); return u; } } catch { /* fallback below */ }
-  return _botUsernameCache.get(cfg.token) ?? "بات مدرسه";
+  try { const me = await tg(cfg, "getMe", {}); if (me?.ok && me.result?.username) { const u = `@${me.result.username}`; _botUsernameCache.set(cacheKey, u); return u; } } catch { /* fallback below */ }
+  return _botUsernameCache.get(cacheKey) ?? "بات مدرسه";
 }
 function isGroupLike(chat: any): boolean { const t = String(chat?.type ?? ""); return t === "group" || t === "supergroup"; }
 function isAffiliateChat(cfg: TgCfg, chatId: number, chat: any): boolean {
@@ -457,9 +466,21 @@ async function handleChatMemberUpdate(cfg: TgCfg, cu: any): Promise<void> {
 }
 
 // ---------- webhook entry ----------
-// مسیرها:
-//   POST /api/telegram-webhook            → مسیر قدیمی (پیکربندی env — تک‌مدرسه‌ای)
-//   POST /api/telegram-webhook/<schoolId> → نسخه ۲ (پیکربندی per-school از DB)
+// مسیرها (Task 38: هر پیام‌رسان مسیر خودش):
+//   POST /api/telegram-webhook                 → مسیر قدیمی (پیکربندی env — تک‌مدرسه‌ای)
+//   POST /api/telegram-webhook/<schoolId>      → تلگرام per-school (سکرت در هدر x-telegram-bot-api-secret-token)
+//   POST /api/bale-webhook/<schoolId>/<secret> → بله per-school (API بله سکرت هدری ندارد → سکرت در خود مسیر)
+async function processUpdate(cfg: TgCfg, update: any): Promise<void> {
+  if (update?.message) await handleMessage(cfg, update.message);
+  else if (update?.callback_query) await handleCallbackQuery(cfg, update.callback_query);
+  else if (update?.chat_member) await handleChatMemberUpdate(cfg, update.chat_member);
+  else if (update?.my_chat_member) await handleMyChatMember(cfg, update.my_chat_member);
+}
+
+function botOkResponse(): Response {
+  return new Response("ok", { headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
 export async function handleTelegramWebhook(req: Request, schoolId: number | null = null): Promise<Response> {
   const cfg = await loadTgCfg(schoolId);
   const expectedSecret = cfg.webhookSecret || (schoolId == null ? process.env.TELEGRAM_WEBHOOK_SECRET ?? "" : "");
@@ -468,31 +489,46 @@ export async function handleTelegramWebhook(req: Request, schoolId: number | nul
     if (got !== expectedSecret) return new Response("forbidden", { status: 403 });
   }
   let update: any = null;
-  try { update = await req.json(); } catch { return new Response("ok"); }
-
+  try { update = await req.json(); } catch { return botOkResponse(); }
   // پردازش را await می‌کنیم (همه فراخوانی‌ها HTTP سریع هستند) و همیشه ok برمی‌گردانیم
   try {
-    if (update?.message) await handleMessage(cfg, update.message);
-    else if (update?.callback_query) await handleCallbackQuery(cfg, update.callback_query);
-    else if (update?.chat_member) await handleChatMemberUpdate(cfg, update.chat_member);
-    else if (update?.my_chat_member) await handleMyChatMember(cfg, update.my_chat_member);
+    await processUpdate(cfg, update);
   } catch (e) {
     console.error("[telegram] update processing error:", e);
   }
-  return new Response("ok", { headers: { "content-type": "text/plain; charset=utf-8" } });
+  return botOkResponse();
+}
+
+// وب‌هوک بله — API بله پارامتر secret_token ندارد؛ سکرت تصادفی در خود مسیر URL قرار می‌گیرد
+export async function handleBaleWebhook(req: Request, schoolId: number, pathSecret: string): Promise<Response> {
+  const cfg = await loadTgCfg(schoolId);
+  const expectedSecret = cfg.webhookSecret;
+  if (!expectedSecret || !pathSecret || pathSecret !== expectedSecret) return new Response("forbidden", { status: 403 });
+  let update: any = null;
+  try { update = await req.json(); } catch { return botOkResponse(); }
+  try {
+    await processUpdate(cfg, update);
+  } catch (e) {
+    console.error("[bale] update processing error:", e);
+  }
+  return botOkResponse();
 }
 
 // ---------- panel-driven bot management (نسخه ۲ — تب تنظیمات) ----------------
 
 // تست اعتبار توکن بات (getMe) — بدون ذخیره چیزی؛ برای دکمه «تست اتصال» پنل
-export async function testBotToken(token: string): Promise<{ ok: boolean; botUsername?: string; botName?: string; error?: string }> {
+export async function testBotToken(token: string, provider: MessengerProvider = "telegram"): Promise<{ ok: boolean; botUsername?: string; botName?: string; error?: string }> {
   const clean = token.trim();
-  if (!/^\d+:[\w-]{30,}$/.test(clean)) return { ok: false, error: "فرمت توکن درست نیست؛ توکن را کامل از @BotFather کپی کنید (مثل 123456789:AAE...)" };
+  const isBale = provider === "bale";
+  // تلگرام توکن‌ها <id>:<35+ کاراکتر> است؛ توکن بله کمی کوتاه‌تر ممکن است — حداقلِ امن می‌پذیریم
+  const tokenRe = isBale ? /^\d+:[A-Za-z0-9_-]{8,}$/ : /^\d+:[\w-]{30,}$/;
+  const father = isBale ? "@BotFather بله (داخل خود پیام‌رسان بله)" : "@BotFather";
+  if (!tokenRe.test(clean)) return { ok: false, error: `فرمت توکن درست نیست؛ توکن را کامل از ${father} کپی کنید (مثل 123456789:AAE…)` };
   try {
-    const res = await fetch(`https://api.telegram.org/bot${clean}/getMe`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const res = await fetch(`${messengerApiBase(provider)}/bot${clean}/getMe`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     const json: any = await res.json().catch(() => null);
     if (json?.ok && json.result?.username) return { ok: true, botUsername: `@${json.result.username}`, botName: [json.result.first_name, json.result.last_name].filter(Boolean).join(" ") };
-    return { ok: false, error: json?.description ?? "تلگرام این توکن را نپذیرفت" };
+    return { ok: false, error: json?.description ?? (isBale ? "بله این توکن را نپذیرفت" : "تلگرام این توکن را نپذیرفت") };
   } catch (e: any) {
     return { ok: false, error: String(e?.message ?? e) };
   }
@@ -502,23 +538,33 @@ function webhookBaseUrl(): string {
   return (process.env.PUBLIC_BASE_URL || process.env.WORKER_ORIGIN || "").replace(/\/+$/, "");
 }
 
-// ثبت/به‌روزرسانی وب‌هوک بات مدرسه به سمت همین سرور با سکرت اختصاصی مدرسه
+// ثبت/به‌روزرسانی وب‌هوک بات مدرسه به سمت همین سرور
+// تلگرام: سکرت در هدر secret_token + allowed_updates کامل (شامل chat_member برای امتیاز دعوت)
+// بله: مستندات فقط پارامتر url را تضمین می‌کند → سکرت در خود مسیر URL رمزگذاری می‌شود
 export async function registerSchoolWebhook(schoolId: number): Promise<{ ok: boolean; url?: string; info?: any; error?: string }> {
   const row = await getSchoolTelegram(schoolId);
   if (!row?.botToken) return { ok: false, error: "ابتدا توکن بات را ذخیره کنید" };
   const base = webhookBaseUrl();
   if (!base) return { ok: false, error: "آدرس عمومی سرور تنظیم نشده است (PUBLIC_BASE_URL)" };
   const cfg = await loadTgCfg(schoolId);
-  const hookUrl = `${base}/api/telegram-webhook/${schoolId}`;
+  const provider = row.messenger ?? "telegram";
   const secret = row.webhookSecret || genWebhookSecret();
-  const res = await tg(cfg, "setWebhook", {
-    url: hookUrl,
-    secret_token: secret,
-    allowed_updates: ["message", "callback_query", "chat_member", "my_chat_member"],
-    drop_pending_updates: false,
-  });
+  let hookUrl: string;
+  let res: any;
+  if (provider === "bale") {
+    hookUrl = `${base}/api/bale-webhook/${schoolId}/${secret}`;
+    res = await tg(cfg, "setWebhook", { url: hookUrl });
+  } else {
+    hookUrl = `${base}/api/telegram-webhook/${schoolId}`;
+    res = await tg(cfg, "setWebhook", {
+      url: hookUrl,
+      secret_token: secret,
+      allowed_updates: ["message", "callback_query", "chat_member", "my_chat_member"],
+      drop_pending_updates: false,
+    });
+  }
   if (!res?.ok) return { ok: false, error: res?.description ?? "ثبت وب‌هوک ناموفق بود", url: hookUrl };
-  await setSchoolTelegram(schoolId, { webhookSecret: secret, webhookUrl: hookUrl });
+  await setSchoolTelegram(schoolId, { webhookSecret: secret, webhookUrl: hookUrl, messenger: provider });
   const info = await tg(cfg, "getWebhookInfo", {});
   return { ok: true, url: hookUrl, info: info?.result ?? null };
 }
@@ -543,14 +589,14 @@ export async function disconnectSchoolBot(schoolId: number): Promise<{ ok: boole
 }
 
 // ذخیره پیکربندی جدید بات مدرسه (اعتبارسنجی + سد توکن تکراری بین مدارس)
-export async function saveSchoolBotConfig(schoolId: number, botToken: string, channelId: string): Promise<{ ok: boolean; botUsername?: string; botName?: string; error?: string; conflictSchoolId?: number }> {
+export async function saveSchoolBotConfig(schoolId: number, botToken: string, channelId: string, provider: MessengerProvider = "telegram"): Promise<{ ok: boolean; botUsername?: string; botName?: string; error?: string; conflictSchoolId?: number }> {
   const cleanToken = botToken.trim();
   const cleanChannel = channelId.trim();
-  const check = await testBotToken(cleanToken);
+  const check = await testBotToken(cleanToken, provider);
   if (!check.ok) return { ok: false, error: check.error };
   const conflict = await findSchoolIdByBotToken(cleanToken, schoolId);
-  if (conflict != null) return { ok: false, conflictSchoolId: conflict, error: "این بات قبلاً برای مدرسه دیگری تنظیم شده است؛ هر مدرسه باید بات مخصوص خودش را از @BotFather بسازد." };
-  await setSchoolTelegram(schoolId, { botToken: cleanToken, channelId: cleanChannel || null, botUsername: check.botUsername ?? null });
-  _botUsernameCache.delete(cleanToken);
+  if (conflict != null) return { ok: false, conflictSchoolId: conflict, error: "این بات قبلاً برای مدرسه دیگری تنظیم شده است؛ هر مدرسه باید بات مخصوص خودش را بسازد." };
+  await setSchoolTelegram(schoolId, { botToken: cleanToken, channelId: cleanChannel || null, botUsername: check.botUsername ?? null, messenger: provider });
+  _botUsernameCache.delete(`${provider}:${cleanToken}`);
   return { ok: true, botUsername: check.botUsername, botName: check.botName };
 }

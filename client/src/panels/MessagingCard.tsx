@@ -1,4 +1,4 @@
-// فاز ۵ — کارت «پیام‌رسانی تلگرام» در تب تنظیمات (فقط مدیر)
+// فاز ۵ + Task 38 — کارت «پیام‌رسانی (تلگرام/بله)» در تب تنظیمات (فقط مدیر)
 // ۱) سوییچ اعلان‌های خودکار (امتحان/نمره/حضور/امتیاز)  ۲) پیام همگانی به دانش‌آموزان متصل
 // ۳) شمارش متصل‌ها به تفکیک کلاس (چرا پیام به همه نمی‌رسد: فقط اکانت‌های متصل)
 import { useEffect, useState } from "react";
@@ -38,8 +38,8 @@ export function MessagingCard({ botConfigured }: { botConfigured: boolean }) {
   const [text, setText] = useState("");
   const sendBc = trpc.telegram.broadcast.useMutation({
     onSuccess: d => {
-      if (!d.botConfigured) { toast.error("بات تلگرام هنوز وصل نیست — ابتدا توکن بات را در کارت بالا ذخیره کنید"); return; }
-      if (d.linked === 0) { toast.warning("هیچ دانش‌آموزی اکانت تلگرامش وصل نیست؛ دانش‌آموزان باید در بات نام خود را بفرستند"); return; }
+      if (!d.botConfigured) { toast.error("بات هنوز وصل نیست — ابتدا توکن بات را در کارت اتصال بات ذخیره کنید"); return; }
+      if (d.linked === 0) { toast.warning("هیچ دانش‌آموزی اکانتش وصل نیست؛ دانش‌آموزان باید در بات (تلگرام یا بله) نام خود را بفرستند"); return; }
       toast.success(`پیام به ${d.sent} نفر رسید${d.failed ? ` — ${d.failed} ناموفق` : ""}`);
       setText("");
     },
@@ -59,8 +59,8 @@ export function MessagingCard({ botConfigured }: { botConfigured: boolean }) {
   return (
     <Card className="border-0 shadow-sm rounded-2xl">
       <CardHeader>
-        <CardTitle className="text-lg flex items-center gap-2"><BellRing className="h-5 w-5 text-[#0f766e]" /> پیام‌رسانی تلگرام (اعلان‌های خودکار)</CardTitle>
-        <p className="text-sm text-slate-500 mt-1">بات مدرسه برای دانش‌آموزانی که حساب تلگرامشان وصل است پیام می‌فرستد. اتصال = دانش‌آموز در بات، نام و نام خانوادگی خودش را بفرستد.</p>
+        <CardTitle className="text-lg flex items-center gap-2"><BellRing className="h-5 w-5 text-[#0f766e]" /> پیام‌رسانی تلگرام / بله (اعلان‌های خودکار)</CardTitle>
+        <p className="text-sm text-slate-500 mt-1">بات مدرسه (تلگرام یا بله — بسته به انتخاب در کارت «اتصال بات») برای دانش‌آموزانی که حسابشان وصل است پیام می‌فرستد. اتصال = دانش‌آموز در بات، نام و نام خانوادگی خودش را بفرستد.</p>
       </CardHeader>
       <CardContent className="space-y-5">
         {/* اعلان‌های خودکار */}

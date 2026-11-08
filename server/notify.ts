@@ -19,13 +19,23 @@ import {
   getStudentTgUserId,
   getSchoolTelegram,
   type LinkedStudent,
+  type MessengerProvider,
 } from "./db";
 import { listExamsBetween, getPortalSchedule, getSchoolById } from "./db-v2";
 import { formatJalaliLong } from "./jalali";
 
 // پیکربندی بات مدرسه — مستقیم از DB (بدون ایمپورت از telegram.ts تا وابستگی حلقوی نشود)
-async function schoolBotToken(schoolId: number): Promise<string | null> {
-  try { return (await getSchoolTelegram(schoolId))?.botToken ?? null; } catch { return null; }
+// Task 38: پیام‌رسان مدرسه (تلگرام یا بله) هم برگردانده می‌شود تا پایه API درست انتخاب شود
+async function schoolBot(schoolId: number): Promise<{ token: string | null; provider: MessengerProvider }> {
+  try {
+    const row = await getSchoolTelegram(schoolId);
+    return { token: row?.botToken ?? null, provider: row?.messenger ?? "telegram" };
+  } catch { return { token: null, provider: "telegram" }; }
+}
+
+// پایه API بات — بله روی tapi.bale.ai همان API تلگرام را ارائه می‌کند
+function botApiBase(provider: MessengerProvider): string {
+  return provider === "bale" ? "https://tapi.bale.ai" : "https://api.telegram.org";
 }
 
 // ---------- ExecutionContext (waitUntil) ----------
@@ -42,12 +52,12 @@ function runDetached(p: Promise<unknown>): void {
   }
 }
 
-// ---------- Telegram send ----------
+// ---------- Bot send (تلگرام/بله) ----------
 async function sendBotMessage(schoolId: number, chatId: number, text: string, replyMarkup?: unknown): Promise<boolean> {
-  const token = await schoolBotToken(schoolId);
-  if (!token) return false; // بات تنظیم نشده — بدون fetch خارجی
+  const bot = await schoolBot(schoolId);
+  if (!bot.token) return false; // بات تنظیم نشده — بدون fetch خارجی
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const res = await fetch(`${botApiBase(bot.provider)}/bot${bot.token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
@@ -239,7 +249,7 @@ export async function notifyTeamActivity(schoolId: number, item: { teamId: numbe
 
 // ---------- پیام همگانی از پنل مدیر ----------
 export async function broadcastFromPanel(schoolId: number, input: { classId: number | null; text: string }): Promise<{ linked: number; sent: number; failed: number; botConfigured: boolean }> {
-  const botConfigured = Boolean(await schoolBotToken(schoolId));
+  const botConfigured = Boolean((await schoolBot(schoolId)).token);
   const linked = await listLinkedStudents(schoolId, input.classId ?? null).catch(() => [] as LinkedStudent[]);
   if (!botConfigured) return { linked: linked.length, sent: 0, failed: 0, botConfigured: false };
   if (!linked.length) return { linked: 0, sent: 0, failed: 0, botConfigured: true };

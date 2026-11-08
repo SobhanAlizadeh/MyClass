@@ -64,7 +64,7 @@ async def main():
         await page.get_by_role("button", name="ارسال پیام").click()
         await page.wait_for_timeout(1200)
         await page.wait_for_timeout(2500)
-        ok("messaging: هشدار بات وصل نیست", await page.get_by_text("بات تلگرام هنوز وصل نیست").count() > 0)
+        ok("messaging: هشدار بات وصل نیست", await page.get_by_text("بات هنوز وصل نیست").count() > 0)
 
         # موبایل ۳۹۰px
         await page.set_viewport_size({"width": 390, "height": 844})

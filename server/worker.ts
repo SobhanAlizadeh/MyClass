@@ -11,7 +11,7 @@
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "./routers";
 import { createFetchContext } from "./_core/context";
-import { handleTelegramWebhook } from "./telegram";
+import { handleTelegramWebhook, handleBaleWebhook } from "./telegram";
 import { setExecCtx } from "./notify";
 
 export interface Env {
@@ -59,6 +59,13 @@ export default {
     if (hookMatch) {
       if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
       return handleTelegramWebhook(req, Number(hookMatch[1]));
+    }
+
+    // Task 38: وب‌هوک پیام‌رسان بله — API بله سکرت هدری ندارد؛ سکرت در خود مسیر است
+    const baleMatch = url.pathname.match(/^\/api\/bale-webhook\/(\d+)\/([A-Za-z0-9]+)$/);
+    if (baleMatch) {
+      if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+      return handleBaleWebhook(req, Number(baleMatch[1]), baleMatch[2]);
     }
 
     if (url.pathname.startsWith("/api/trpc")) {
