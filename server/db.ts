@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
 import { connect } from "@tidbcloud/serverless";
 import { drizzle } from "drizzle-orm/tidb-serverless";
 import { TRPCError } from "@trpc/server";
@@ -148,9 +148,57 @@ export async function updateStudent(input: { id: number; classId: number; teamId
       const movedPoints = transfer.movedPoints;
       if (oldTeamId !== null && movedPoints !== 0) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${movedPoints}` }).where(eq(teams.id, oldTeamId));
       if (newTeamId !== null && movedPoints !== 0) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} + ${movedPoints}` }).where(eq(teams.id, newTeamId));
-      await tx.insert(studentTeamTransfers).values({ studentId: input.id, fromTeamId: oldTeamId, toTeamId: newTeamId, movedPoints, date: new Date().toISOString().slice(0, 10) });
+      await tx.insert(studentTeamTransfers).values({ studentId: input.id, fromTeamId: oldTeamId, toTeamId: newTeamId, movedPoints, date: new Date().toISOString().slice(0, 10), schoolId: current[0].schoolId ?? null });
     }
     await tx.update(students).set({ classId: input.classId, teamId: newTeamId, firstName, lastName, studentCode: input.studentCode }).where(eq(students.id, input.id));
+  });
+}
+// انتقال دسته‌ای: چند دانش‌آموز به‌هم به یک کلاس/تیم مقصد می‌روند — امتیاز هر نفر از تیم قبلی کم و به تیم جدید اضافه می‌شود و تاریخچه ثبت می‌گردد
+export async function transferStudents(input: { studentIds: number[]; classId: number; teamId?: number | null }): Promise<{ moved: number; requested: number }> {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const ids = Array.from(new Set(input.studentIds));
+  if (ids.length === 0) throw new Error("هیچ دانش‌آموزی انتخاب نشده است");
+  const teamId = input.teamId ?? null;
+  return db.transaction(async tx => {
+    const destClassRows = await tx.select({ id: classes.id, schoolId: classes.schoolId }).from(classes).where(eq(classes.id, input.classId)).limit(1);
+    if (!destClassRows[0]) throw new Error("کلاس مقصد پیدا نشد");
+    let destTeam: { id: number; classId: number } | undefined;
+    if (teamId !== null) {
+      destTeam = (await tx.select({ id: teams.id, classId: teams.classId }).from(teams).where(eq(teams.id, teamId)).limit(1))[0];
+      if (!destTeam) throw new Error("تیم مقصد پیدا نشد");
+      if (destTeam.classId !== input.classId) throw new Error("تیم انتخاب‌شده متعلق به کلاس مقصد نیست");
+    }
+    const rows = await tx.select().from(students).where(inArray(students.id, ids));
+    if (rows.length !== ids.length) throw new Error("برخی از دانش‌آموزهای انتخاب‌شده پیدا نشدند");
+    // قیود یکتایی همان مسیرهای دیگر: نام تکراری یا شماره دانش‌آموزی تکراری در کلاس مقصد مجاز نیست
+    const residents = await tx.select({ firstName: students.firstName, lastName: students.lastName, studentCode: students.studentCode }).from(students).where(and(eq(students.classId, input.classId), eq(students.graduated, 0), notInArray(students.id, ids)));
+    const residentNames = new Set(residents.map(r => `${r.firstName} ${r.lastName}`));
+    const residentCodes = new Set(residents.map(r => (r.studentCode ?? "").trim()).filter(Boolean));
+    const conflicts: string[] = [];
+    const movedNameCounts = new Map<string, number>();
+    for (const row of rows) {
+      const name = `${row.firstName} ${row.lastName}`;
+      movedNameCounts.set(name, (movedNameCounts.get(name) ?? 0) + 1);
+      const code = (row.studentCode ?? "").trim();
+      if (residentNames.has(name)) conflicts.push(`نام «${name}» در کلاس مقصد قبلاً ثبت شده است`);
+      else if (code && residentCodes.has(code)) conflicts.push(`شماره دانش‌آموزی «${code}» (${name}) در کلاس مقصد تکراری است`);
+    }
+    for (const [name, count] of Array.from(movedNameCounts.entries())) if (count > 1) conflicts.push(`دو دانش‌آموز هم‌نام «${name}» در انتخاب شما هست`);
+    if (conflicts.length) throw new Error(`انتقال انجام نشد — ${conflicts.slice(0, 3).join("؛ ")}`);
+    const date = new Date().toISOString().slice(0, 10);
+    let moved = 0;
+    for (const row of rows) {
+      const oldTeamId = row.teamId ?? null;
+      if (row.classId === input.classId && oldTeamId === teamId) continue; // همین الان آنجاست
+      const points = Number(row.totalPoints ?? 0);
+      if (oldTeamId !== null && oldTeamId !== teamId && points !== 0) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} - ${points}` }).where(eq(teams.id, oldTeamId));
+      if (teamId !== null && oldTeamId !== teamId && points !== 0) await tx.update(teams).set({ totalPoints: sql`${teams.totalPoints} + ${points}` }).where(eq(teams.id, teamId));
+      if (oldTeamId !== teamId) await tx.insert(studentTeamTransfers).values({ studentId: row.id, fromTeamId: oldTeamId, toTeamId: teamId, movedPoints: points, date, schoolId: row.schoolId ?? destClassRows[0].schoolId ?? null });
+      await tx.update(students).set({ classId: input.classId, teamId }).where(eq(students.id, row.id));
+      moved++;
+    }
+    return { moved, requested: ids.length };
   });
 }
 export async function deleteClass(id: number) { const db = await getDb(); if (!db) throw new Error("Database unavailable"); const memberRows = await db.select({ id: students.id }).from(students).where(eq(students.classId, id)); const teamRows = await db.select({ id: teams.id }).from(teams).where(eq(teams.classId, id)); for (const row of memberRows) await deleteStudent(row.id); for (const row of teamRows) await db.delete(activities).where(eq(activities.teamId, row.id)); await db.delete(teams).where(eq(teams.classId, id)); await db.delete(classes).where(eq(classes.id, id)); }

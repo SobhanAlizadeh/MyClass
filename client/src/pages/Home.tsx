@@ -109,6 +109,9 @@ export default function Home() {
   const updateClass = trpc.school.updateClass.useMutation(mutation("کلاس ویرایش شد", () => setEditing(null)));
   const updateTeam = trpc.school.updateTeam.useMutation(mutation("تیم ویرایش شد", () => setEditing(null)));
   const updateStudent = trpc.school.updateStudent.useMutation(mutation("دانش‌آموز ویرایش شد", () => setEditing(null)));
+  // انتقال تکی (همان updateStudent با پیام موفقیت مخصوص انتقال) و انتقال دسته‌ای (mutation جدید سمت سرور)
+  const transferStudent = trpc.school.updateStudent.useMutation(mutation("دانش‌آموز منتقل شد"));
+  const transferStudents = trpc.school.transferStudents.useMutation(mutation("انتقال دسته‌ای انجام شد"));
   const deleteClass = trpc.school.deleteClass.useMutation(mutation("کلاس حذف شد"));
   const deleteTeam = trpc.school.deleteTeam.useMutation(mutation("تیم حذف شد"));
   const deleteStudent = trpc.school.deleteStudent.useMutation(mutation("دانش‌آموز حذف شد"));
@@ -258,7 +261,7 @@ export default function Home() {
     deleteClass, deleteTeam, deleteStudent,
     addAttendance, addActivity, addTeamActivity, addSubject, updateSubject, deleteSubject,
     spendStudent, spendTeam, addGrade, updateGrade, deleteGrade, addClass, addTeam, addStudent,
-    updateClass, updateTeam, updateStudent,
+    updateClass, updateTeam, updateStudent, transferStudent, transferStudents,
     selectedClass, entryClassId, spendClassId, attendanceClassId, date, target, studentId, teamId,
     activityKind, activityTitle, points, spendTarget, spendStudentId, spendTeamId, spendPoints,
     spendNote, gradeTitle, gradeSubjectId, gradeType, editingGradeId, editingGradeType,
